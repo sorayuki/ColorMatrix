@@ -32,8 +32,8 @@
 #include <float.h>
 #include "avisynth.h"
 
-#define VERSION "2.5"
-#define DATE "01/25/2009"
+#define VERSION "2.6"
+#define DATE "02/22/2018"
 
 #define MAGIC_NUMBER 0xdeadbeef
 #define COLORIMETRY 0x0000001C
@@ -62,7 +62,7 @@
 #define CB(n) max(min((n),255),0)
 #define simd_scale(n) n >= 65536 ? (n+2)>>2 : n >= 32768 ? (n+1)>>1 : n;
 
-#define YUV_COEFFS_LUMA_COUNT 4
+#define YUV_COEFFS_LUMA_COUNT 5
 
 static double yuv_coeffs_luma[YUV_COEFFS_LUMA_COUNT][3] =
 { 
@@ -70,6 +70,7 @@ static double yuv_coeffs_luma[YUV_COEFFS_LUMA_COUNT][3] =
   +0.5900, +0.1100, +0.3000, // FCC (1)
   +0.5870, +0.1140, +0.2990, // Rec.601 (ITU-R BT.470-2/SMPTE 170M) (2)
   +0.7010, +0.0870, +0.2120, // SMPTE 240M (3)
+  +0.6780, +0.0594, +0.2627, // Rec.2020 (4)
 };
 
 __declspec(align(16)) const __int64 Q32[2] = { 0x0020002000200020, 0x0020002000200020 };

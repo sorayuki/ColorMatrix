@@ -60,6 +60,7 @@ ColorMatrix::ColorMatrix(PClip _child, const char* _mode, int _source, int _dest
 		else if (opt == 1) { cpu &= ~0x28; cpu |= 0x04; }
 		else if (opt == 2) cpu |= 0x2C;
 	}
+
 	css.cpu = cpu;
 	css.debug = debug;
 	if (*mode) 
@@ -74,6 +75,11 @@ ColorMatrix::ColorMatrix(PClip _child, const char* _mode, int _source, int _dest
 	if (source == dest && inputFR == outputFR && !(*d2v) && !hints)
 		env->ThrowError("ColorMatrix:  source and dest or inputFR and outputFR must " \
 			"have different values!");
+
+    // disable simd for Rec.2020 for I don't implement it
+    if (source == 4 || dest == 4)
+        css.cpu = 0;
+
 	modei = source == dest ? -2 : source*4+dest;
 	if (debug)
 	{
@@ -374,7 +380,7 @@ unsigned _stdcall processFrame_YV12(void *ps)
 			const int dst_pitch = pss->dst_pitch;
 			const int c1 = pss->cs->c1;
 			if (c1 == 65536 && (cpu&CPUF_SSE2) && 
-				!((int(srcp)|int(dstp)|widtha|dst_pitch|src_pitch)&15))
+				!((int(srcp)|int(dstp)|widtha|dst_pitch|src_pitch)&15)) 
 			{
 				if (debug)
 				{
@@ -649,18 +655,27 @@ void ColorMatrix::checkMode(const char *md, IScriptEnvironment *env)
 	if (lstrcmpi(md, "Rec.709->FCC") == 0) { source = 0; dest = 1; }
 	if (lstrcmpi(md, "Rec.709->Rec.601") == 0) { source = 0; dest = 2; }
 	if (lstrcmpi(md, "Rec.709->SMPTE 240M") == 0) { source = 0; dest = 3; }
+    if (lstrcmpi(md, "Rec.709->Rec.2020") == 0) { source = 0; dest = 4; }
 	if (lstrcmpi(md, "FCC->Rec.709") == 0) { source = 1; dest = 0; }
 	if (lstrcmpi(md, "FCC->FCC") == 0) { source = 1; dest = 1; }
 	if (lstrcmpi(md, "FCC->Rec.601") == 0) { source = 1; dest = 2; }
 	if (lstrcmpi(md, "FCC->SMPTE 240M") == 0) { source = 1; dest = 3; }
+    if (lstrcmpi(md, "FCC->Rec.2020") == 0) { source = 1; dest = 4; }
 	if (lstrcmpi(md, "Rec.601->Rec.709") == 0) { source = 2; dest = 0; }
 	if (lstrcmpi(md, "Rec.601->FCC") == 0) { source = 2; dest = 1; }
 	if (lstrcmpi(md, "Rec.601->Rec.601") == 0) { source = 2; dest = 2; }
 	if (lstrcmpi(md, "Rec.601->SMPTE 240M") == 0) { source = 2; dest = 3; }
+    if (lstrcmpi(md, "Rec.601->Rec.2020") == 0) { source = 2; dest = 4; }
 	if (lstrcmpi(md, "SMPTE 240M->Rec.709") == 0) { source = 3; dest = 0; }
 	if (lstrcmpi(md, "SMPTE 240M->FCC") == 0) { source = 3; dest = 1; }
 	if (lstrcmpi(md, "SMPTE 240M->Rec.601") == 0) { source = 3; dest = 2; }
 	if (lstrcmpi(md, "SMPTE 240M->SMPTE 240M") == 0) { source = 3; dest = 3; }
+    if (lstrcmpi(md, "SMPTE 240M->Rec.2020") == 0) { source = 3; dest = 4; }
+    if (lstrcmpi(md, "Rec.2020->Rec.709") == 0) { source = 4; dest = 0; }
+    if (lstrcmpi(md, "Rec.2020->FCC") == 0) { source = 4; dest = 1; }
+    if (lstrcmpi(md, "Rec.2020->Rec.601") == 0) { source = 4; dest = 2; }
+    if (lstrcmpi(md, "Rec.2020->SMPTE 240M") == 0) { source = 4; dest = 3; }
+    if (lstrcmpi(md, "Rec.2020->Rec.2020") == 0) { source = 4; dest = 4; }
 	if (source == -1 || dest == -1)
 		env->ThrowError("ColorMatrix:  invalid mode string!");
 }
@@ -948,9 +963,23 @@ void ColorMatrix::calc_coefficients(IScriptEnvironment *env)
 				yuv_convert[v][k][1] = ns(yuv_convertd[v][k][1]);
 				yuv_convert[v][k][2] = ns(yuv_convertd[v][k][2]);
 			}
-			if ((yuv_convert[v][0][0] != 65536 && inputFR == outputFR) || 
-				yuv_convert[v][1][0] != 0 || yuv_convert[v][2][0] != 0)
-				env->ThrowError("ColorMatrix:  error calculating conversion coefficients!");
+
+#if 1
+            // hack it for Rec.2020
+            if (i == 4 || j == 4)
+            {
+                if (abs((signed long)yuv_convert[v][0][0] - 65536) < (65536 / 200)) yuv_convert[v][0][0] = 65536;
+                if (abs(yuv_convert[v][1][0]) < 65536 / 400) yuv_convert[v][1][0] = 0;
+                if (abs(yuv_convert[v][2][0]) < 65536 / 400) yuv_convert[v][2][0] = 0;
+            }
+#endif
+
+            if ((yuv_convert[v][0][0] != 65536 && inputFR == outputFR) || 
+                yuv_convert[v][1][0] != 0 || yuv_convert[v][2][0] != 0)
+            {
+
+                env->ThrowError("ColorMatrix:  error calculating conversion coefficients!");
+            }
 			++v;
 		}
 	}

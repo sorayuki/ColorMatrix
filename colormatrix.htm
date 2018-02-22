@@ -131,6 +131,7 @@ each replaced by one of the following (capitalization does not matter):</p>
 <li>FCC
 <li>Rec.601
 <li>SMPTE 240M
+<li>Rec.2020
 </ul>
 <p>Examples:</p>
 <ul>
@@ -138,6 +139,7 @@ each replaced by one of the following (capitalization does not matter):</p>
 <li>ColorMatrix(mode="Rec.601->FCC")
 <li>ColorMatrix(mode="SMPTE 240M->Rec.601")
 <li>ColorMatrix(mode="Rec.709->FCC")
+<li>ColorMatrix(mode="Rec.2020->Rec.709")
 </ul>
 <p><var>source</var> and <var>dest</var> cannot be the same if <var>inputFR</var> and 
 <var>outputFR</var> are also the same.</p>
@@ -154,6 +156,7 @@ then it will override <var>source</var>.  Possible settings:</p>
 <li>1 - FCC
 <li>2 - Rec.601
 <li>3 - SMPTE 240M
+<li>4 - Rec.2020
 </ul>
 <p>The <var>source</var> and <var>dest</var> parameters cannot be equal if 
 <var>inputFR</var> and <var>outputFR</var> are also equal.</p>
@@ -170,6 +173,7 @@ then it will override <var>dest</var>.  Possible settings:</p>
 <li>1 - FCC
 <li>2 - Rec.601
 <li>3 - SMPTE 240M
+<li>4 - Rec.2020
 </ul>
 <p>The <var>source</var> and <var>dest</var> parameters cannot be equal if 
 <var>inputFR</var> and <var>outputFR</var> are also equal.</p>
