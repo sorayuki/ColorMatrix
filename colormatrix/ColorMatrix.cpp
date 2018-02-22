@@ -66,10 +66,10 @@ ColorMatrix::ColorMatrix(PClip _child, const char* _mode, int _source, int _dest
 		checkMode(mode, env);
 	else
 	{
-		if (source < 0 || source > 3)
-			env->ThrowError("ColorMatrix:  source must be set to 0, 1, 2, or 3!");
-		if (dest < 0 || dest > 3)
-			env->ThrowError("ColorMatrix:  dest must be set to 0, 1, 2, or 3!");
+        if (source < 0 || source >= YUV_COEFFS_LUMA_COUNT)
+			env->ThrowError("ColorMatrix:  source must be set to 0, 1, 2, 3 or 4!");
+        if (dest < 0 || dest >= YUV_COEFFS_LUMA_COUNT)
+			env->ThrowError("ColorMatrix:  dest must be set to 0, 1, 2, 3 or 4!");
 	}
 	if (source == dest && inputFR == outputFR && !(*d2v) && !hints)
 		env->ThrowError("ColorMatrix:  source and dest or inputFR and outputFR must " \
@@ -904,8 +904,8 @@ void ColorMatrix::solve_coefficients(double cm[3][3], double rgb[3][3], double y
 
 void ColorMatrix::calc_coefficients(IScriptEnvironment *env)
 {
-	double yuv_coeff[4][3][3];
-	for (int i=0; i<4; ++i)
+    double yuv_coeff[YUV_COEFFS_LUMA_COUNT][3][3];
+    for (int i = 0; i<YUV_COEFFS_LUMA_COUNT; ++i)
 	{
 		yuv_coeff[i][0][0] = yuv_coeffs_luma[i][0];
 		yuv_coeff[i][0][1] = yuv_coeffs_luma[i][1];
@@ -919,9 +919,9 @@ void ColorMatrix::calc_coefficients(IScriptEnvironment *env)
 		yuv_coeff[i][2][1] = -yuv_coeff[i][0][1]*rscale;
 		yuv_coeff[i][2][2] = (1.0-yuv_coeff[i][0][2])*rscale;
 	}
-	double rgb_coeffd[4][3][3];
-	double yuv_convertd[16][3][3];
-	for (int i=0; i<4; ++i)
+    double rgb_coeffd[YUV_COEFFS_LUMA_COUNT][3][3];
+    double yuv_convertd[YUV_COEFFS_LUMA_COUNT * YUV_COEFFS_LUMA_COUNT][3][3];
+    for (int i = 0; i<YUV_COEFFS_LUMA_COUNT; ++i)
 		inverse3x3(rgb_coeffd[i], yuv_coeff[i]);
 	double yiscale = 1.0/255.0, uviscale = 1.0/255.0;
 	double yoscale = 255.0, uvoscale = 255.0;
@@ -936,9 +936,9 @@ void ColorMatrix::calc_coefficients(IScriptEnvironment *env)
 		uvoscale = 224.0;
 	}
 	int v = 0;
-	for (int i=0; i<4; ++i)
+    for (int i = 0; i<YUV_COEFFS_LUMA_COUNT; ++i)
 	{
-		for (int j=0; j<4; ++j)
+        for (int j = 0; j<YUV_COEFFS_LUMA_COUNT; ++j)
 		{
 			solve_coefficients(yuv_convertd[v], rgb_coeffd[i], yuv_coeff[j],
 				yiscale, uviscale, yoscale, uvoscale);

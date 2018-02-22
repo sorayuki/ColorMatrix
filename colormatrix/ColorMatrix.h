@@ -62,7 +62,9 @@
 #define CB(n) max(min((n),255),0)
 #define simd_scale(n) n >= 65536 ? (n+2)>>2 : n >= 32768 ? (n+1)>>1 : n;
 
-static double yuv_coeffs_luma[4][3] =
+#define YUV_COEFFS_LUMA_COUNT 4
+
+static double yuv_coeffs_luma[YUV_COEFFS_LUMA_COUNT][3] =
 { 
   +0.7152, +0.0722, +0.2126, // Rec.709 (0)
   +0.5900, +0.1100, +0.3000, // FCC (1)
@@ -115,7 +117,7 @@ class ColorMatrix : public GenericVideoFilter
 {
 private:
 	char buf[256];
-	int yuv_convert[16][3][3];
+    int yuv_convert[YUV_COEFFS_LUMA_COUNT * YUV_COEFFS_LUMA_COUNT][3][3];
 	const char *mode, *d2v;
 	unsigned char *d2vArray;
 	bool hints, interlaced, debug;
