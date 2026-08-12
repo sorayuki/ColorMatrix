@@ -1,0 +1,5 @@
+build/generated/
+*.obj
+*.lib
+*.exp
+*.pdb

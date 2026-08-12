@@ -1,9 +1,9 @@
 /*
-**                 ColorMatrix v2.5 for Avisynth 2.5.x
+**                 ColorMatrix v2.6.1 for AviSynth
 **
 **   ColorMatrix 2.0 is based on the original ColorMatrix filter by Wilbert 
 **   Dijkhof.  It adds the ability to convert between any of: Rec.709, FCC, 
-**   Rec.601, and SMPTE 240M. It also makes pre and post clipping optional,
+**   Rec.601, SMPTE 240M, and Rec.2020. It also makes pre and post clipping optional,
 **   adds range expansion/contraction, and more...
 **
 **   Copyright (C) 2006-2009 Kevin Stone
@@ -30,10 +30,14 @@
 #include <xmmintrin.h>
 #include <process.h>
 #include <float.h>
+#if defined(COLORMATRIX_CLASSIC_API3_X64)
+#include "avisynth26_api3_x64.h"
+#else
 #include "avisynth.h"
+#endif
 
-#define VERSION "2.6"
-#define DATE "02/22/2018"
+#define VERSION "2.6.1"
+#define DATE "08/06/2026"
 
 #define MAGIC_NUMBER 0xdeadbeef
 #define COLORIMETRY 0x0000001C
@@ -45,24 +49,32 @@
 				n == 7 ? "SMPTE 240M" : \
 				n == -1 ? "no hint found" : \
 				"unknown"
-#define CTS2(n) n == 1 ? "Rec.709->FCC" : \
-				n == 2 ? "Rec.709->Rec.601" : \
-				n == 3 ? "Rec.709->SMPTE 240M" : \
-				n == 4 ? "FCC->Rec.709" : \
-				n == 6 ? "FCC->Rec.601" : \
-				n == 7 ? "FCC->SMPTE 240M" : \
-				n == 8 ? "Rec.601->Rec.709" : \
-				n == 9 ? "Rec.601->FCC" : \
-				n == 11 ? "Rec.601->SMPTE 240M" : \
-				n == 12 ? "SMPTE 240M->Rec.709" : \
-				n == 13 ? "SMPTE 240M->FCC" : \
-				n == 14 ? "SMPTE 240M->Rec.601" : \
-				"unknown"
+#define YUV_COEFFS_LUMA_COUNT 5
+#define YUV_CONVERSION_COUNT (YUV_COEFFS_LUMA_COUNT * YUV_COEFFS_LUMA_COUNT)
+#define MATRIX_MODE_INDEX(source, dest) ((source) * YUV_COEFFS_LUMA_COUNT + (dest))
+
+/*
+ * Keep diagnostic mode names in the same five-wide, row-major order as
+ * yuv_convert.  ColorMatrix 2.6 retained the old four-wide diagnostic table
+ * when Rec.2020 was added, which hid the stale source*4+dest indexing bug.
+ */
+static const char *const yuv_conversion_names[YUV_CONVERSION_COUNT] =
+{
+	"Rec.709->Rec.709", "Rec.709->FCC", "Rec.709->Rec.601", "Rec.709->SMPTE 240M", "Rec.709->Rec.2020",
+	"FCC->Rec.709", "FCC->FCC", "FCC->Rec.601", "FCC->SMPTE 240M", "FCC->Rec.2020",
+	"Rec.601->Rec.709", "Rec.601->FCC", "Rec.601->Rec.601", "Rec.601->SMPTE 240M", "Rec.601->Rec.2020",
+	"SMPTE 240M->Rec.709", "SMPTE 240M->FCC", "SMPTE 240M->Rec.601", "SMPTE 240M->SMPTE 240M", "SMPTE 240M->Rec.2020",
+	"Rec.2020->Rec.709", "Rec.2020->FCC", "Rec.2020->Rec.601", "Rec.2020->SMPTE 240M", "Rec.2020->Rec.2020"
+};
+
+static const char *ColorMatrixConversionName(int mode)
+{
+	return mode >= 0 && mode < YUV_CONVERSION_COUNT ? yuv_conversion_names[mode] : "unknown";
+}
+#define CTS2(n) ColorMatrixConversionName(n)
 #define ns(n) n < 0 ? int(n*65536.0-0.5+DBL_EPSILON) : int(n*65536.0+0.5)
 #define CB(n) max(min((n),255),0)
 #define simd_scale(n) n >= 65536 ? (n+2)>>2 : n >= 32768 ? (n+1)>>1 : n;
-
-#define YUV_COEFFS_LUMA_COUNT 5
 
 static double yuv_coeffs_luma[YUV_COEFFS_LUMA_COUNT][3] =
 { 
@@ -118,7 +130,7 @@ class ColorMatrix : public GenericVideoFilter
 {
 private:
 	char buf[256];
-    int yuv_convert[YUV_COEFFS_LUMA_COUNT * YUV_COEFFS_LUMA_COUNT][3][3];
+    int yuv_convert[YUV_CONVERSION_COUNT][3][3];
 	const char *mode, *d2v;
 	unsigned char *d2vArray;
 	bool hints, interlaced, debug;

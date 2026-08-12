@@ -59,11 +59,11 @@ kbd       { color: #808000; font-family: Verdana, Arial, Helvetica, sans-serif; 
 </HEAD>
 <BODY>
 
-<h1>ColorMatrix v2.5</h1>
+<h1>ColorMatrix v2.6.1</h1>
 <h2>Abstract</h2>
 <ul>
 <b>author:</b>    tritical, SoraYuki
-<br><b>version:</b> v2.5<br>
+<br><b>version:</b> v2.6.1<br>
 <b>download:</b>   <a href="http://bengal.missouri.edu/~kes25c/">http://bengal.missouri.edu/~kes25c/</a>
 <br><b>category:</b>   Misc Plugins
 <br><b>requirements:</b>&nbsp;
@@ -424,7 +424,14 @@ info</a> - doom9 thread about the problem.
 
 <h2>Changelog</h2>
 <ul>
-<p>v2.6, 22th February 2018<br>
+<p>v2.6.1, 6th August 2026<br>
+  - Fixed the five-wide conversion-table indexing introduced when Rec.2020 support was added.<br>
+  - Fixed d2v/hint conversion indexing for the five-matrix table.<br>
+  - Remapped legacy MMX/SSE2 dispatch mode numbers to the five-wide table.<br>
+  - Fixed conversion-name diagnostics for all 25 source/destination pairs.<br>
+  - Added bounds checking and 64-bit-safe compatibility fixes.<br>
+</p>
+<p>v2.6, 22nd February 2018<br>
   + Add Rec.2020 support (without ASM optimization)
 </p>
 <p>v2.5, 25th January 2009<br>

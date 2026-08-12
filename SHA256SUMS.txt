@@ -1,0 +1,4 @@
+52ecc494cd930298e5778b7aa8d6f241cb25f0ca8a3ff13d5f945b535c737d1c  bin/hybrid-compatible/x86/colormatrix.dll
+1e87ce9d680c050aca88ab3c0137d220579ae05c23919eb6311310eefe0fc1c1  bin/hybrid-compatible/x64/ColorMatrix64.dll
+c8109af3a1ef32bc6fbd9062f60ef56b2136e4e259be442952f7056fdd125395  bin/source-build/x86/colormatrix.dll
+2291dda6a7fee1d167f79d8846db19bf4e974a22d795cb01d7bbf0b9764008ef  bin/source-build/x64/ColorMatrix64.dll

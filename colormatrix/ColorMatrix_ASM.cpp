@@ -1,5 +1,5 @@
 /*
-**                 ColorMatrix v2.5 for Avisynth 2.5.x
+**                 ColorMatrix v2.6.1 for AviSynth
 **
 **   ColorMatrix 2.0 is based on the original ColorMatrix filter by Wilbert 
 **   Dijkhof.  It adds the ability to convert between any of: Rec.709, FCC, 

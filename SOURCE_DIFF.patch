@@ -1,0 +1,2710 @@
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/.gitignore ColorMatrix-2.6.1-fixed-r3/.gitignore
+--- original/ColorMatrix-master/.gitignore	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/.gitignore	2026-08-06 00:00:00.000000000 +0000
+@@ -0,0 +1,5 @@
++build/generated/
++*.obj
++*.lib
++*.exp
++*.pdb
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/ABI_RESEARCH.md ColorMatrix-2.6.1-fixed-r3/ABI_RESEARCH.md
+--- original/ColorMatrix-master/ABI_RESEARCH.md	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/ABI_RESEARCH.md	2026-08-09 07:49:14.664917210 +0000
+@@ -0,0 +1,120 @@
++# Classic x64/API3 ABI research
++
++## Goal
++
++Build ColorMatrix from corrected source for the classic 64-bit AviSynth runtime
++bundled with Selur Hybrid, rather than modifying Hybrid's existing binary.
++
++## User-supplied historical archives
++
++The following attached archives were inspected:
++
++| Archive | SHA-256 | Relevant finding |
++|---|---|---|
++| `avisynth64_JoshyD.zip` | `CCA6A935D1964A8847517035CE677FF302A8F58277139A7EA15401E323654D71` | Historical x64 port; `AVISYNTH_INTERFACE_VERSION = 3`; direct/baked C++ plugin ABI; no `AVS_Linkage` or `AvisynthPluginInit3` |
++| `avisynth-mt.zip` | `FC27DA257A2E599B17CA807FB61FB55ABC6D42B095EBCF41C43B6729C785F770` | AviSynth 2.5.8 MT tree; interface version 3; same pre-API3 model |
++
++They are useful historical references, but neither is the exact interface used
++by Hybrid's API3 x64 plugins.
++
++## Classic AviSynth 2.6 evidence
++
++AviSynth 2.6 introduced the linkage-facing API entry point, bumped the classic
++interface to 6, and changed memory-size fields for 64-bit-safe use. Maintained
++compatibility headers preserve the classic-v6 linkage prefix and explicitly
++route plugin-side C++ wrappers through `AVS_Linkage`.
++
++The R3 header includes only the API surface ColorMatrix needs. It does not claim
++to be a complete replacement SDK.
++
++## ABI observations from Hybrid's original x64 DLL
++
++Original Hybrid binary:
++
++```text
++SHA-256 654454449F992122BFAE5671003491DB67212EE6B15FE0975F81B8B47223FEDF
++```
++
++Static inspection established:
++
++- PE32+ x86-64 DLL.
++- Sole plugin export: `AvisynthPluginInit3`.
++- The Init3 second argument is stored as the global linkage pointer.
++- `IScriptEnvironment::AddFunction` is invoked through vtable offset `0x30`.
++- The linkage `Size` field is read as a 32-bit integer.
++- Natural x64 alignment places the first linkage function pointer at `0x08`.
++- `IClip::GetVersion()` returns 6.
++
++Observed classic-prefix linkage offsets used by ColorMatrix:
++
++| Entry | Offset |
++|---|---:|
++| `PClip_OPERATOR_ASSIGN1` | `0x1E8` |
++| `PVideoFrame_DESTRUCTOR` | `0x220` |
++| `AVSValue_DESTRUCTOR` | `0x278` |
++
++Observed object sizes:
++
++| Type | x64 size |
++|---|---:|
++| `VideoInfo` | 48 |
++| `VideoFrameBuffer` | 24 |
++| `VideoFrame` | 72 |
++| `IClip` | 16 |
++| `PClip` | 8 |
++| `PVideoFrame` | 8 |
++| `AVSValue` | 16 |
++
++These values are asserted at compile time in
++`colormatrix/avisynth26_api3_x64.h`.
++
++## Why the old x64 source build crashed
++
++The withdrawn x64 build exported a compatibility `AvisynthPluginInit3` and
++saved its linkage pointer, but all C++ helper operations were still compiled
++from the old interface-v3 header. Objects such as `PClip`, `PVideoFrame`, and
++`AVSValue` consequently used the wrong baked ABI instead of host-supplied
++linkage functions.
++
++R3 changes the entire x64 plugin-facing layer:
++
++- real interface-v6 `AvisynthPluginInit3`;
++- global `AVS_linkage` initialized from the host;
++- linkage-backed constructors, destructors, assignments, and accessors;
++- x64 class layouts and linkage offsets guarded by `static_assert`;
++- `IClip::GetVersion()` compiled as 6;
++- the original `IScriptEnvironment` virtual interface order retained.
++
++## Deliberate scope
++
++ColorMatrix does not use `VideoFrameBuffer::GetDataSize()` or
++`VideoFrame::GetOffset()` directly. Historical headers disagree on the exact
++spelling/type of those two memory-size declarations across branches; R3 uses
++the 64-bit-safe layout observed in Hybrid's binary and the 2.6 release history.
++This does not affect ColorMatrix's executed call set.
++
++## Runtime confirmation
++
++The source-built x64 DLL produced by this interface layer has SHA-256
++`2291DDA6A7FEE1D167F79D8846DB19BF4E974A22D795CB01D7BBF0B9764008EF`.
++The reporter subsequently confirmed that it works correctly in Selur Hybrid
++2026.03.21.1 on Windows 10 Pro 22H2 x64 with an AMD Ryzen 9950X: it loaded,
++completed the Rec.601-to-Rec.709 workflow without crashing, and did not produce
++the erroneous FCC-to-SMPTE-240M color shift.
++
++That result validates the reconstructed interface-v6/API3 linkage path for the
++reported Hybrid runtime. It does not imply exhaustive compatibility with every
++classic AviSynth host or every unused declaration in this intentionally minimal
++header.
++
++## Reference locations
++
++These references were used only to recover the classic interface contract;
++the R3 DLL does **not** depend on AviSynth+ at runtime.
++
++- AviSynth 2.6.0 release files and readme:
++  `https://sourceforge.net/projects/avisynth2/files/AviSynth%202.6/AviSynth%202.6.0/`
++- Maintained AviSynth header preserving the classic-v6 prefix:
++  `https://github.com/AviSynth/AviSynthPlus/blob/master/avs_core/include/avisynth.h`
++- Independent classic-interface compatibility copy used by VapourSynth:
++  `https://github.com/vapoursynth/vapoursynth/blob/master/src/avisynth/avisynth.h`
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/PATCH_NOTES.md ColorMatrix-2.6.1-fixed-r3/PATCH_NOTES.md
+--- original/ColorMatrix-master/PATCH_NOTES.md	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/PATCH_NOTES.md	2026-08-09 07:49:14.665100155 +0000
+@@ -0,0 +1,91 @@
++# Patch notes
++
++## Upstream five-wide indexing defect
++
++The source defines five luma coefficient sets in this order:
++
++| Index | Matrix |
++|---:|---|
++| 0 | Rec.709 |
++| 1 | FCC |
++| 2 | Rec.601 / SMPTE 170M |
++| 3 | SMPTE 240M |
++| 4 | Rec.2020 |
++
++`calc_coefficients()` generates every source/destination pair in row-major
++order, so `yuv_convert` has a row width of five. ColorMatrix 2.6 retained the
++old four-wide expression in explicit mode selection and old row offsets in
++`findMode()`.
++
++Requested `Rec.601 -> Rec.709` therefore selected:
++
++- buggy index: `2 * 4 + 0 = 8`;
++- actual entry 8: `FCC -> SMPTE 240M`;
++- correct index: `2 * 5 + 0 = 10`.
++
++The reporter independently reproduced the original ColorMatrix output by
++requesting `FCC -> SMPTE 240M` in VapourSynth.
++
++## Source corrections
++
++- Added `YUV_CONVERSION_COUNT` and `MATRIX_MODE_INDEX`.
++- Replaced explicit and hint/D2V index arithmetic with the helper.
++- Remapped legacy SIMD modes to the corrected 5×5 numbering.
++- Replaced the stale four-wide debug-name chain with a 25-entry table.
++- Added defensive conversion-index bounds checking.
++- Added the classic-x64/API3 interface-v6 source-build path.
++
++## Hybrid-compatible binary patches
++
++The exact Hybrid DLLs were generated from a separate port whose source is not
++in the upstream archive. `tools/patch_hybrid_binaries.py` therefore applies a
++narrow, hash-locked correction to those binaries.
++
++### x86
++
++The normal-path branch at RVA `0x4115` is redirected to the trampoline at
++`0x4161`. The trampoline enters a code cave that computes
++`destination + source * 5`, stores the mode, and returns to `0x4175`.
++
++### x64
++
++The normal-path branch at RVA `0x30E7` is redirected to the first instruction
++of the corrected block at `0x3145`. The block calculates and stores
++`source * 5 + destination`, then continues at `0x3160`.
++
++The D2V/hint row offsets are likewise changed from `8/12/4` to `10/15/5`.
++The exact Hybrid binaries contain the C conversion path, so no binary SIMD
++changes are needed.
++
++The reporter has runtime-tested both R2 Hybrid-compatible DLLs successfully.
++
++## R3 x64 source build
++
++The new x64 source build is compiled with
++`COLORMATRIX_CLASSIC_API3_X64` and includes
++`colormatrix/avisynth26_api3_x64.h` instead of the old interface-v3 header.
++Its plugin entry point:
++
++```cpp
++extern "C" __declspec(dllexport) const char* __stdcall AvisynthPluginInit3(
++    IScriptEnvironment* env, const AVS_Linkage* const vectors)
++{
++    AVS_linkage = vectors;
++    env->AddFunction(...);
++    return 0;
++}
++```
++
++All ColorMatrix-used helper objects call the classic host through the linkage
++table. This is a full source-level ABI adaptation, not an added export around
++old baked wrappers.
++
++## R3 runtime status
++
++All four distributed DLLs have now been runtime-confirmed by the reporter in
++Selur Hybrid. In particular, the genuine x64 source build
++`bin/source-build/x64/ColorMatrix64.dll` with SHA-256
++`2291DDA6A7FEE1D167F79D8846DB19BF4E974A22D795CB01D7BBF0B9764008EF`
++loaded and completed the Rec.601-to-Rec.709 workflow with no crash and no
++incorrect color shift. This confirms that the classic-x64/API3 source
++adaptation is operational in the reported Windows 10 Pro 22H2 x64 environment.
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/README.md ColorMatrix-2.6.1-fixed-r3/README.md
+--- original/ColorMatrix-master/README.md	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/README.md	2026-08-09 07:49:14.664592616 +0000
+@@ -0,0 +1,118 @@
++# ColorMatrix 2.6.1 — corrected five-wide indexing (R3, runtime-confirmed)
++
++This repository is a corrected derivative of the user-supplied
++`sorayuki/ColorMatrix` master snapshot.
++
++## Fixed ColorMatrix defect
++
++ColorMatrix 2.6 added Rec.2020 as a fifth luma-coefficient set, expanding the
++flattened conversion table from 4×4 to 5×5. Several call sites continued to
++index the table as if each row had four entries:
++
++```cpp
++source * 4 + dest
++```
++
++The corrected code uses the actual coefficient count:
++
++```cpp
++#define MATRIX_MODE_INDEX(source, dest) \
++    ((source) * YUV_COEFFS_LUMA_COUNT + (dest))
++```
++
++For `Rec.601 -> Rec.709`, the correct entry is `2 * 5 + 0 = 10`. The old
++expression selected entry 8, which is `FCC -> SMPTE 240M` in the 5×5 table.
++The reporter independently reproduced the original visual error by requesting
++that exact FCC-to-SMPTE-240M operation in VapourSynth.
++
++The same five-wide correction is applied to explicit modes, D2V/hint modes,
++diagnostic names, bounds checks, and the legacy SIMD dispatcher.
++
++## R3: genuine classic-x64/API3 source build
++
++R3 adds a newly compiled 64-bit source build for Hybrid's classic AviSynth
++runtime. This is not a machine-code patch of Hybrid's DLL.
++
++The two historical source archives supplied for investigation were useful for
++confirming old x64 class layouts, but both expose the older interface version 3
++and neither defines `AVS_Linkage` or `AvisynthPluginInit3`. They therefore are
++not the exact SDK required by Hybrid.
++
++The missing build interface was reconstructed from three compatible sources:
++
++1. AviSynth 2.6's documented interface-v6/API3 linkage design.
++2. The preserved classic-v6 `AVS_Linkage` prefix and plugin wrappers in
++   maintained compatibility headers.
++3. Static ABI observations from Hybrid's original working x64
++   `ColorMatrix64.dll`, including its export, `AVS_Linkage` offsets, class
++   sizes, `IClip::GetVersion()`, and `IScriptEnvironment` vtable calls.
++
++The resulting minimal header is:
++
++```text
++colormatrix/avisynth26_api3_x64.h
++```
++
++It supplies a real `AvisynthPluginInit3`, stores the host linkage table, and
++routes plugin-side `PClip`, `PVideoFrame`, `AVSValue`, `VideoInfo`, and
++`VideoFrame` operations through that table. This is the substantive difference
++from the withdrawn R1 x64 source build, which merely stored the API3 pointer
++while continuing to use the old baked C++ ABI.
++
++The resulting x64 source-built DLL, SHA-256
++`2291DDA6A7FEE1D167F79D8846DB19BF4E974A22D795CB01D7BBF0B9764008EF`,
++was subsequently runtime-confirmed by the reporter in Selur Hybrid
++2026.03.21.1 on Windows 10 Pro 22H2 x64 with an AMD Ryzen 9950X. It loaded and
++completed the Rec.601-to-Rec.709 workflow without a crash and without the
++erroneous FCC-to-SMPTE-240M color shift.
++
++See `ABI_RESEARCH.md`, `VALIDATION.md`, and `RUNTIME_VALIDATION.md` for the
++evidence, test status, and validation scope.
++
++## Binary status
++
++The repository and binary package contain four DLLs. All four have been
++runtime-confirmed in the reported Hybrid workflow:
++
++| Path | SHA-256 | Status |
++|---|---|---|
++| `bin/hybrid-compatible/x86/colormatrix.dll` | `52ECC494CD930298E5778B7AA8D6F241CB25F0CA8A3FF13D5F945B535C737D1C` | Runtime-tested in Hybrid; no crash and no color shift |
++| `bin/hybrid-compatible/x64/ColorMatrix64.dll` | `1E87CE9D680C050ACA88AB3C0137D220579AE05C23919EB6311310EEFE0FC1C1` | Runtime-tested in Hybrid; no crash and no color shift |
++| `bin/source-build/x86/colormatrix.dll` | `C8109AF3A1EF32BC6FBD9062F60EF56B2136E4E259BE442952F7056FDD125395` | Runtime-tested in Hybrid; no crash and no color shift |
++| `bin/source-build/x64/ColorMatrix64.dll` | `2291DDA6A7FEE1D167F79D8846DB19BF4E974A22D795CB01D7BBF0B9764008EF` | Runtime-tested in Hybrid; no crash and no color shift |
++
++The `hybrid-compatible` DLLs are narrow, hash-locked patches of Hybrid's exact
++original binaries. The `source-build` DLLs are newly linked from this source
++tree. Runtime confirmation covers the reported system and conversion workflow;
++it is not a guarantee for every classic AviSynth host or every possible filter
++configuration.
++
++Back up Hybrid's original DLL before replacement and verify the SHA-256 value
++of the selected replacement.
++
++## Build
++
++```bash
++bash build/build_portable_clang_cl.sh
++```
++
++The script requires `clang-cl` and `lld-link`, and produces both x86 and x64
++source builds. It intentionally uses ColorMatrix's C conversion path so that a
++correct source mode cannot be routed through stale legacy SIMD mode numbering.
++
++## Tests
++
++```bash
++python tests/test_mode_index.py
++python tests/test_patched_pe.py \
++  --x86 bin/hybrid-compatible/x86/colormatrix.dll \
++  --x64 bin/hybrid-compatible/x64/ColorMatrix64.dll
++python tests/test_source_api3_x64.py \
++  --x86 bin/source-build/x86/colormatrix.dll \
++  --x64 bin/source-build/x64/ColorMatrix64.dll
++```
++
++## License
++
++The upstream source is distributed under GPLv2; see `gpl.txt`. The bundled
++classic API declarations retain the AviSynth header's plugin-linking exception.
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/RUNTIME_VALIDATION.md ColorMatrix-2.6.1-fixed-r3/RUNTIME_VALIDATION.md
+--- original/ColorMatrix-master/RUNTIME_VALIDATION.md	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/RUNTIME_VALIDATION.md	2026-08-09 07:49:14.665360225 +0000
+@@ -0,0 +1,36 @@
++# Reporter runtime validation
++
++## Recorded status
++
++Runtime confirmation was completed for all four R3 DLLs. The final x64 source
++build confirmation was recorded on 2026-08-09.
++
++Reported environment:
++
++- Selur Hybrid 2026.03.21.1
++- Windows 10 Pro 22H2 x64
++- AMD Ryzen 9950X
++- ColorMatrix Rec.601-to-Rec.709 workflow used throughout the investigation
++
++## Results
++
++| Binary | SHA-256 | Result |
++|---|---|---|
++| `bin/hybrid-compatible/x86/colormatrix.dll` | `52ECC494CD930298E5778B7AA8D6F241CB25F0CA8A3FF13D5F945B535C737D1C` | Works correctly in Hybrid; no crash and no color shift |
++| `bin/hybrid-compatible/x64/ColorMatrix64.dll` | `1E87CE9D680C050ACA88AB3C0137D220579AE05C23919EB6311310EEFE0FC1C1` | Works correctly in Hybrid; no crash and no color shift |
++| `bin/source-build/x86/colormatrix.dll` | `C8109AF3A1EF32BC6FBD9062F60EF56B2136E4E259BE442952F7056FDD125395` | Works correctly in Hybrid; no crash and no color shift |
++| `bin/source-build/x64/ColorMatrix64.dll` | `2291DDA6A7FEE1D167F79D8846DB19BF4E974A22D795CB01D7BBF0B9764008EF` | Works correctly in Hybrid; no crash and no color shift |
++
++The x64 source-build result is significant because it confirms the reconstructed
++classic interface-v6/API3 compatibility layer at runtime, rather than only by
++static PE inspection. The corrected source build applies the intended
++Rec.601-to-Rec.709 conversion instead of the old accidental FCC-to-SMPTE-240M
++operation.
++
++## Scope
++
++These are reporter-supplied runtime results for the environment and workflow
++above. They validate the distributed hashes in that context; they are not an
++exhaustive certification of every ColorMatrix mode, input format, AviSynth
++variant, or host program. Any rebuilt or modified DLL should be rehashed and
++retested.
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/SHA256SUMS.txt ColorMatrix-2.6.1-fixed-r3/SHA256SUMS.txt
+--- original/ColorMatrix-master/SHA256SUMS.txt	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/SHA256SUMS.txt	2026-08-08 08:20:18.000000000 +0000
+@@ -0,0 +1,4 @@
++52ecc494cd930298e5778b7aa8d6f241cb25f0ca8a3ff13d5f945b535c737d1c  bin/hybrid-compatible/x86/colormatrix.dll
++1e87ce9d680c050aca88ab3c0137d220579ae05c23919eb6311310eefe0fc1c1  bin/hybrid-compatible/x64/ColorMatrix64.dll
++c8109af3a1ef32bc6fbd9062f60ef56b2136e4e259be442952f7056fdd125395  bin/source-build/x86/colormatrix.dll
++2291dda6a7fee1d167f79d8846db19bf4e974a22d795cb01d7bbf0b9764008ef  bin/source-build/x64/ColorMatrix64.dll
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/UPSTREAM.md ColorMatrix-2.6.1-fixed-r3/UPSTREAM.md
+--- original/ColorMatrix-master/UPSTREAM.md	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/UPSTREAM.md	2026-08-06 00:00:00.000000000 +0000
+@@ -0,0 +1,6 @@
++# Upstream basis
++
++This tree was produced from the `ColorMatrix-master.zip` snapshot supplied by
++the user, identified as the `sorayuki/ColorMatrix` repository. The supplied
++archive did not include Git metadata, so no upstream commit hash is asserted
++here.
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/VALIDATION.md ColorMatrix-2.6.1-fixed-r3/VALIDATION.md
+--- original/ColorMatrix-master/VALIDATION.md	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/VALIDATION.md	2026-08-09 07:49:14.664783068 +0000
+@@ -0,0 +1,76 @@
++# Validation performed for R3
++
++## Runtime-confirmed binaries
++
++The reporter tested all four corrected DLLs in Selur Hybrid on Windows 10 Pro
++22H2 x64. The reported x64 system used an AMD Ryzen 9950X. Each DLL completed
++the Rec.601-to-Rec.709 workflow without a crash and without the erroneous color
++shift:
++
++| Binary | SHA-256 | Reporter result |
++|---|---|---|
++| `bin/hybrid-compatible/x86/colormatrix.dll` | `52ECC494CD930298E5778B7AA8D6F241CB25F0CA8A3FF13D5F945B535C737D1C` | Correct; no crash and no color shift |
++| `bin/hybrid-compatible/x64/ColorMatrix64.dll` | `1E87CE9D680C050ACA88AB3C0137D220579AE05C23919EB6311310EEFE0FC1C1` | Correct; no crash and no color shift |
++| `bin/source-build/x86/colormatrix.dll` | `C8109AF3A1EF32BC6FBD9062F60EF56B2136E4E259BE442952F7056FDD125395` | Correct; no crash and no color shift |
++| `bin/source-build/x64/ColorMatrix64.dll` | `2291DDA6A7FEE1D167F79D8846DB19BF4E974A22D795CB01D7BBF0B9764008EF` | Correct; no crash and no color shift |
++
++The x64 source-build confirmation was recorded on 2026-08-09. It closes the
++remaining R3 runtime-validation item for the reconstructed classic-x64/API3
++interface.
++
++The reporter also reproduced the original defect by explicitly converting FCC
++to SMPTE 240M in VapourSynth, independently confirming the table-index
++analysis.
++
++## Source-level tests
++
++- `tests/test_mode_index.py` passes.
++- Explicit `Rec.601 -> Rec.709` resolves to index 10.
++- Entry 8 remains `FCC -> SMPTE 240M`.
++- Hint/D2V row offsets and legacy SIMD groups match the five-wide numbering.
++
++## Hybrid-compatible PE tests
++
++`tests/test_patched_pe.py` checks:
++
++- exact output SHA-256 values;
++- PE machine types;
++- corrected incoming branch targets;
++- x86 code-cave calculation and return target;
++- x64 corrected instruction block;
++- corrected D2V/hint row offsets.
++
++Both Hybrid-compatible DLLs have additionally passed the reporter's runtime
++validation.
++
++## Source-build static validation
++
++`tests/test_source_api3_x64.py` checks:
++
++- x86 source-build hash remains byte-identical to the reporter-validated build;
++- x64 source-build hash and PE32+ machine type;
++- the x64 DLL exports only `AvisynthPluginInit3`;
++- Init3 stores the host's second argument and calls `AddFunction` at vtable
++  offset `0x30`;
++- `IClip::GetVersion()` returns 6;
++- the source header contains the expected linkage-offset and object-size
++  assertions;
++- the source uses a real `AVS_Linkage`-backed Init3 path.
++
++The x64 source build was linked twice with `/Brepro`; both outputs had the same
++SHA-256 value:
++
++```text
++2291DDA6A7FEE1D167F79D8846DB19BF4E974A22D795CB01D7BBF0B9764008EF
++```
++
++The reporter's successful Hybrid test confirms that this statically verified
++API3 path also works at runtime in the reported environment.
++
++## Validation scope
++
++The runtime results establish correct operation for the reported Selur Hybrid
++workflow and test system. They do not exhaustively certify every conversion
++mode, input format, classic AviSynth build, or host application. The source and
++PE tests remain useful guards against regression, but future changes should be
++retested on Windows.
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/build/README.md ColorMatrix-2.6.1-fixed-r3/build/README.md
+--- original/ColorMatrix-master/build/README.md	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/build/README.md	2026-08-09 07:49:14.665256734 +0000
+@@ -0,0 +1,57 @@
++# Reproducible portable source build
++
++`build_portable_clang_cl.sh` cross-compiles ColorMatrix with `clang-cl` and
++`lld-link`.
++
++## Outputs
++
++```text
++bin/source-build/x86/colormatrix.dll
++bin/source-build/x64/ColorMatrix64.dll
++```
++
++Both outputs are exact reporter-validated source builds. The x64 output is a
++genuine classic interface-v6/API3 build using
++`colormatrix/avisynth26_api3_x64.h`; it has been confirmed to load and operate
++correctly in Selur Hybrid 2026.03.21.1 on Windows 10 Pro 22H2 x64.
++
++## Requirements
++
++- `clang-cl`
++- `lld-link`
++- a POSIX shell environment for the build script
++
++The script builds its small import libraries locally and does not require a
++Windows SDK installation in the container.
++
++## Command
++
++```bash
++bash build/build_portable_clang_cl.sh
++```
++
++Expected hashes for this repository revision:
++
++```text
++C8109AF3A1EF32BC6FBD9062F60EF56B2136E4E259BE442952F7056FDD125395  x86/colormatrix.dll
++2291DDA6A7FEE1D167F79D8846DB19BF4E974A22D795CB01D7BBF0B9764008EF  x64/ColorMatrix64.dll
++```
++
++## Build design
++
++Both targets use ColorMatrix's C conversion path. The x86 target retains the
++source and flags that produced the validated DLL. The x64 target additionally
++defines:
++
++```text
++COLORMATRIX_CLASSIC_API3_X64
++AVISYNTH64
++```
++
++This selects the linkage-backed classic x64 header and exports only
++`AvisynthPluginInit3`.
++
++The build uses `/Brepro`. Rebuilding without source/toolchain changes should
++produce the same output hashes in the same environment. Runtime confirmation
++of the supplied outputs does not remove the need to retest after source,
++compiler, linker, or compatibility-header changes.
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/build/build_portable_clang_cl.sh ColorMatrix-2.6.1-fixed-r3/build/build_portable_clang_cl.sh
+--- original/ColorMatrix-master/build/build_portable_clang_cl.sh	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/build/build_portable_clang_cl.sh	2026-08-08 07:47:54.000000000 +0000
+@@ -0,0 +1,139 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
++BUILD_DIR="$ROOT/build/generated"
++OUT_DIR="$ROOT/bin/source-build"
++
++for tool in clang-cl lld-link; do
++  command -v "$tool" >/dev/null 2>&1 || {
++    echo "error: $tool is required" >&2
++    exit 1
++  }
++done
++
++rm -rf "$BUILD_DIR"
++mkdir -p "$BUILD_DIR"/{imports/x86,imports/x64,obj/x86,obj/x64} "$OUT_DIR"/{x86,x64}
++
++cat > "$BUILD_DIR/imports/x86/kernel32.def" <<'EOF'
++LIBRARY KERNEL32.dll
++EXPORTS
++  InterlockedIncrement
++  InterlockedDecrement
++  GetCurrentThreadId
++  OutputDebugStringA
++  CreateEventA
++  CreateThread
++  lstrcmpiA
++  ResetEvent
++  SetEvent
++  WaitForSingleObject
++  WaitForMultipleObjects
++  CloseHandle
++  GetCurrentProcess
++  GetProcessAffinityMask
++EOF
++
++cat > "$BUILD_DIR/imports/x64/kernel32.def" <<'EOF'
++LIBRARY KERNEL32.dll
++EXPORTS
++  InterlockedIncrement
++  InterlockedDecrement
++  GetCurrentThreadId
++  OutputDebugStringA
++  CreateEventA
++  CreateThread
++  lstrcmpiA
++  ResetEvent
++  SetEvent
++  WaitForSingleObject
++  WaitForMultipleObjects
++  CloseHandle
++  GetCurrentProcess
++  GetProcessAffinityMask
++EOF
++
++cat > "$BUILD_DIR/imports/x86/msvcrt.def" <<'EOF'
++LIBRARY MSVCRT.dll
++EXPORTS
++  sprintf
++  malloc
++  calloc
++  fopen
++  sscanf
++  fgets
++  strncmp
++  memset
++  memcpy
++  fclose
++  free
++  abs
++EOF
++cp "$BUILD_DIR/imports/x86/msvcrt.def" "$BUILD_DIR/imports/x64/msvcrt.def"
++
++lld-link /lib /machine:x86 /def:"$BUILD_DIR/imports/x86/kernel32.def" /out:"$BUILD_DIR/imports/x86/kernel32.lib"
++lld-link /lib /machine:x86 /def:"$BUILD_DIR/imports/x86/msvcrt.def" /out:"$BUILD_DIR/imports/x86/msvcrt.lib"
++lld-link /lib /machine:x64 /def:"$BUILD_DIR/imports/x64/kernel32.def" /out:"$BUILD_DIR/imports/x64/kernel32.lib"
++lld-link /lib /machine:x64 /def:"$BUILD_DIR/imports/x64/msvcrt.def" /out:"$BUILD_DIR/imports/x64/msvcrt.lib"
++
++COMMON=(
++  /nologo /c /O2 /Oi- /GS- /GR- /EHs-c- /Zl /Zc:threadSafeInit- /Brepro
++  /DWIN32 /DNDEBUG /D_WINDOWS /D_USRDLL /DCOLORMATRIX_EXPORTS
++  /DCOLORMATRIX_C_ONLY /DCOLORMATRIX_PORTABLE_BUILD /DCOLORMATRIX_NO_CPP_EXCEPTIONS
++  /I"$ROOT/build/compat" /I"$ROOT/colormatrix"
++  /clang:-fno-builtin
++  /clang:-Wno-microsoft-extra-qualification
++  /clang:-Wno-ignored-attributes
++)
++
++build_arch() {
++  local arch=$1 target=$2 machine=$3 entry=$4 output=$5
++  local obj="$BUILD_DIR/obj/$arch"
++  local imports="$BUILD_DIR/imports/$arch"
++  local arch_defines=()
++  if [[ "$arch" == "x64" ]]; then
++    arch_defines+=(/DCOLORMATRIX_CLASSIC_API3_X64 /DAVISYNTH64)
++  fi
++
++  clang-cl --target="$target" "${COMMON[@]}" "${arch_defines[@]}" \
++    /Fo"$obj/ColorMatrix.obj" "$ROOT/colormatrix/ColorMatrix.cpp"
++  clang-cl --target="$target" "${COMMON[@]}" "${arch_defines[@]}" \
++    /Fo"$obj/portable_runtime.obj" "$ROOT/colormatrix/portable_runtime.cpp"
++
++  local aliases=()
++  if [[ "$arch" == "x86" ]]; then
++    # clang-cl decorates 32-bit stdcall dllimport symbols, while Windows PE
++    # import names are undecorated. Resolve local decorated references to the
++    # correct undecorated import-library symbols without changing the DLL's
++    # actual import table names.
++    aliases=(
++      '/alternatename:__imp__InterlockedIncrement@4=__imp__InterlockedIncrement'
++      '/alternatename:__imp__InterlockedDecrement@4=__imp__InterlockedDecrement'
++      '/alternatename:__imp__GetCurrentThreadId@0=__imp__GetCurrentThreadId'
++      '/alternatename:__imp__OutputDebugStringA@4=__imp__OutputDebugStringA'
++      '/alternatename:__imp__CreateEventA@16=__imp__CreateEventA'
++      '/alternatename:__imp__CreateThread@24=__imp__CreateThread'
++      '/alternatename:__imp__lstrcmpiA@8=__imp__lstrcmpiA'
++      '/alternatename:__imp__ResetEvent@4=__imp__ResetEvent'
++      '/alternatename:__imp__SetEvent@4=__imp__SetEvent'
++      '/alternatename:__imp__WaitForSingleObject@8=__imp__WaitForSingleObject'
++      '/alternatename:__imp__WaitForMultipleObjects@16=__imp__WaitForMultipleObjects'
++      '/alternatename:__imp__CloseHandle@4=__imp__CloseHandle'
++      '/alternatename:__imp__GetCurrentProcess@0=__imp__GetCurrentProcess'
++      '/alternatename:__imp__GetProcessAffinityMask@12=__imp__GetProcessAffinityMask'
++    )
++  fi
++
++  lld-link /dll /nodefaultlib /Brepro /opt:ref /opt:icf \
++    /machine:"$machine" /subsystem:windows /entry:"$entry" \
++    /out:"$output" /implib:"$obj/ColorMatrix.lib" \
++    "${aliases[@]}" \
++    "$obj/ColorMatrix.obj" "$obj/portable_runtime.obj" \
++    "$imports/kernel32.lib" "$imports/msvcrt.lib"
++}
++
++build_arch x86 i686-pc-windows-msvc x86 'DllMain@12' "$OUT_DIR/x86/colormatrix.dll"
++sha256sum "$OUT_DIR/x86/colormatrix.dll"
++
++build_arch x64 x86_64-pc-windows-msvc x64 DllMain "$OUT_DIR/x64/ColorMatrix64.dll"
++sha256sum "$OUT_DIR/x64/ColorMatrix64.dll"
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/build/compat/assert.h ColorMatrix-2.6.1-fixed-r3/build/compat/assert.h
+--- original/ColorMatrix-master/build/compat/assert.h	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/build/compat/assert.h	2026-08-06 00:00:00.000000000 +0000
+@@ -0,0 +1,4 @@
++#ifndef COLORMATRIX_COMPAT_ASSERT_H
++#define COLORMATRIX_COMPAT_ASSERT_H
++#define assert(x) ((void)0)
++#endif
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/build/compat/crtdbg.h ColorMatrix-2.6.1-fixed-r3/build/compat/crtdbg.h
+--- original/ColorMatrix-master/build/compat/crtdbg.h	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/build/compat/crtdbg.h	2026-08-06 00:00:00.000000000 +0000
+@@ -0,0 +1,11 @@
++#ifndef COLORMATRIX_COMPAT_CRTDBG_H
++#define COLORMATRIX_COMPAT_CRTDBG_H
++#define _CRT_WARN 0
++#define _RPT0(a,b) ((void)0)
++#define _RPT1(a,b,c) ((void)0)
++#define _RPT2(a,b,c,d) ((void)0)
++#define _RPT3(a,b,c,d,e) ((void)0)
++#define _RPT4(a,b,c,d,e,f) ((void)0)
++#define _ASSERT(x) ((void)0)
++#define _ASSERTE(x) ((void)0)
++#endif
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/build/compat/float.h ColorMatrix-2.6.1-fixed-r3/build/compat/float.h
+--- original/ColorMatrix-master/build/compat/float.h	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/build/compat/float.h	2026-08-06 00:00:00.000000000 +0000
+@@ -0,0 +1,4 @@
++#ifndef COLORMATRIX_COMPAT_FLOAT_H
++#define COLORMATRIX_COMPAT_FLOAT_H
++#define DBL_EPSILON 2.220446049250313080847263336181640625e-16
++#endif
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/build/compat/objbase.h ColorMatrix-2.6.1-fixed-r3/build/compat/objbase.h
+--- original/ColorMatrix-master/build/compat/objbase.h	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/build/compat/objbase.h	2026-08-06 00:00:00.000000000 +0000
+@@ -0,0 +1,3 @@
++#ifndef COLORMATRIX_COMPAT_OBJBASE_H
++#define COLORMATRIX_COMPAT_OBJBASE_H
++#endif
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/build/compat/process.h ColorMatrix-2.6.1-fixed-r3/build/compat/process.h
+--- original/ColorMatrix-master/build/compat/process.h	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/build/compat/process.h	2026-08-06 00:00:00.000000000 +0000
+@@ -0,0 +1,6 @@
++#ifndef COLORMATRIX_COMPAT_PROCESS_H
++#define COLORMATRIX_COMPAT_PROCESS_H
++#include <windef.h>
++typedef unsigned (__stdcall *CM_BEGINTHREAD_PROC)(void *);
++extern "C" __declspec(dllimport) ULONG_PTR __cdecl _beginthreadex(void *, unsigned, CM_BEGINTHREAD_PROC, void *, unsigned, unsigned *);
++#endif
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/build/compat/stdio.h ColorMatrix-2.6.1-fixed-r3/build/compat/stdio.h
+--- original/ColorMatrix-master/build/compat/stdio.h	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/build/compat/stdio.h	2026-08-06 00:00:00.000000000 +0000
+@@ -0,0 +1,19 @@
++#ifndef COLORMATRIX_COMPAT_STDIO_H
++#define COLORMATRIX_COMPAT_STDIO_H
++#include <windef.h>
++typedef struct _iobuf FILE;
++extern "C" {
++__declspec(dllimport) int __cdecl sprintf(char *, const char *, ...);
++__declspec(dllimport) int __cdecl sscanf(const char *, const char *, ...);
++__declspec(dllimport) FILE * __cdecl fopen(const char *, const char *);
++__declspec(dllimport) int __cdecl fclose(FILE *);
++__declspec(dllimport) char * __cdecl fgets(char *, int, FILE *);
++__declspec(dllimport) int __cdecl strncmp(const char *, const char *, SIZE_T);
++__declspec(dllimport) void * __cdecl malloc(SIZE_T);
++__declspec(dllimport) void * __cdecl calloc(SIZE_T, SIZE_T);
++__declspec(dllimport) void __cdecl free(void *);
++__declspec(dllimport) int __cdecl abs(int);
++__declspec(dllimport) void * __cdecl memset(void *, int, SIZE_T);
++__declspec(dllimport) void * __cdecl memcpy(void *, const void *, SIZE_T);
++}
++#endif
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/build/compat/windef.h ColorMatrix-2.6.1-fixed-r3/build/compat/windef.h
+--- original/ColorMatrix-master/build/compat/windef.h	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/build/compat/windef.h	2026-08-06 00:00:00.000000000 +0000
+@@ -0,0 +1,26 @@
++#ifndef COLORMATRIX_COMPAT_WINDEF_H
++#define COLORMATRIX_COMPAT_WINDEF_H
++#ifndef NULL
++#define NULL 0
++#endif
++typedef unsigned char BYTE;
++typedef unsigned short WORD;
++typedef unsigned long DWORD;
++typedef long LONG;
++typedef unsigned long ULONG;
++typedef int BOOL;
++typedef void *HANDLE;
++typedef void *HMODULE;
++typedef void *LPVOID;
++typedef const void *LPCVOID;
++typedef const char *LPCSTR;
++typedef char *LPSTR;
++typedef __SIZE_TYPE__ size_t;
++typedef __SIZE_TYPE__ SIZE_T;
++typedef __UINTPTR_TYPE__ ULONG_PTR;
++typedef ULONG_PTR DWORD_PTR;
++#ifndef TRUE
++#define TRUE 1
++#define FALSE 0
++#endif
++#endif
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/build/compat/windows.h ColorMatrix-2.6.1-fixed-r3/build/compat/windows.h
+--- original/ColorMatrix-master/build/compat/windows.h	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/build/compat/windows.h	2026-08-06 00:00:00.000000000 +0000
+@@ -0,0 +1,30 @@
++#ifndef COLORMATRIX_COMPAT_WINDOWS_H
++#define COLORMATRIX_COMPAT_WINDOWS_H
++#include <windef.h>
++#define WINAPI __stdcall
++#define INFINITE 0xFFFFFFFFUL
++#define max(a,b) (((a) > (b)) ? (a) : (b))
++#define min(a,b) (((a) < (b)) ? (a) : (b))
++#define UInt32x32To64(a,b) ((unsigned __int64)(unsigned long)(a) * (unsigned __int64)(unsigned long)(b))
++#define Int64ShrlMod32(a,b) ((unsigned __int64)(a) >> (b))
++typedef DWORD (WINAPI *LPTHREAD_START_ROUTINE)(LPVOID);
++extern "C" {
++__declspec(dllimport) DWORD WINAPI GetCurrentThreadId(void);
++__declspec(dllimport) void WINAPI OutputDebugStringA(LPCSTR);
++__declspec(dllimport) int WINAPI lstrcmpiA(LPCSTR, LPCSTR);
++__declspec(dllimport) HANDLE WINAPI CreateEventA(LPVOID, BOOL, BOOL, LPCSTR);
++__declspec(dllimport) HANDLE WINAPI CreateThread(LPVOID, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, DWORD *);
++__declspec(dllimport) BOOL WINAPI SetEvent(HANDLE);
++__declspec(dllimport) BOOL WINAPI ResetEvent(HANDLE);
++__declspec(dllimport) DWORD WINAPI WaitForSingleObject(HANDLE, DWORD);
++__declspec(dllimport) DWORD WINAPI WaitForMultipleObjects(DWORD, const HANDLE *, BOOL, DWORD);
++__declspec(dllimport) BOOL WINAPI CloseHandle(HANDLE);
++__declspec(dllimport) HANDLE WINAPI GetCurrentProcess(void);
++__declspec(dllimport) BOOL WINAPI GetProcessAffinityMask(HANDLE, DWORD_PTR *, DWORD_PTR *);
++__declspec(dllimport) LONG WINAPI InterlockedIncrement(LONG *);
++__declspec(dllimport) LONG WINAPI InterlockedDecrement(LONG *);
++}
++#define OutputDebugString OutputDebugStringA
++#define lstrcmpi lstrcmpiA
++#define CreateEvent CreateEventA
++#endif
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/build/compat/xmmintrin.h ColorMatrix-2.6.1-fixed-r3/build/compat/xmmintrin.h
+--- original/ColorMatrix-master/build/compat/xmmintrin.h	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/build/compat/xmmintrin.h	2026-08-06 00:00:00.000000000 +0000
+@@ -0,0 +1,3 @@
++#ifndef COLORMATRIX_COMPAT_XMMINTRIN_H
++#define COLORMATRIX_COMPAT_XMMINTRIN_H
++#endif
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/colormatrix/ColorMatrix.cpp ColorMatrix-2.6.1-fixed-r3/colormatrix/ColorMatrix.cpp
+--- original/ColorMatrix-master/colormatrix/ColorMatrix.cpp	2018-02-22 08:16:56.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/colormatrix/ColorMatrix.cpp	2026-08-09 07:49:36.988953978 +0000
+@@ -1,9 +1,9 @@
+ /*
+-**                 ColorMatrix v2.5 for Avisynth 2.5.x
++**                 ColorMatrix v2.6.1 for AviSynth
+ **
+ **   ColorMatrix 2.0 is based on the original ColorMatrix filter by Wilbert 
+ **   Dijkhof.  It adds the ability to convert between any of: Rec.709, FCC, 
+-**   Rec.601, and SMPTE 240M. It also makes pre and post clipping optional,
++**   Rec.601, SMPTE 240M, and Rec.2020. It also makes pre and post clipping optional,
+ **   adds range expansion/contraction, and more...
+ **
+ **   Copyright (C) 2006-2009 Kevin Stone
+@@ -27,6 +27,10 @@
+ 
+ #include "ColorMatrix.h"
+ 
++#if defined(COLORMATRIX_CLASSIC_API3_X64)
++const AVS_Linkage* AVS_linkage = 0;
++#endif
++
+ ColorMatrix::ColorMatrix(PClip _child, const char* _mode, int _source, int _dest, int _clamp, 
+ 	bool _interlaced, bool _inputFR, bool _outputFR, bool _hints, const char* _d2v, bool _debug, 
+ 	int _threads, int _thrdmthd, int _opt, IScriptEnvironment* env) : GenericVideoFilter(_child), 
+@@ -60,6 +64,10 @@
+ 		else if (opt == 1) { cpu &= ~0x28; cpu |= 0x04; }
+ 		else if (opt == 2) cpu |= 0x2C;
+ 	}
++#ifdef COLORMATRIX_C_ONLY
++	/* The portable x86/x64 builds intentionally omit the legacy inline ASM. */
++	cpu = 0;
++#endif
+ 
+ 	css.cpu = cpu;
+ 	css.debug = debug;
+@@ -80,11 +88,11 @@
+     if (source == 4 || dest == 4)
+         css.cpu = 0;
+ 
+-	modei = source == dest ? -2 : source*4+dest;
++	modei = source == dest ? -2 : MATRIX_MODE_INDEX(source, dest);
+ 	if (debug)
+ 	{
+ 		sprintf(buf,"ColorMatrix:%u:  version %s (%s)\n", 
+-			GetCurrentThreadId(), VERSION, DATE);
++			(unsigned)GetCurrentThreadId(), VERSION, DATE);
+ 		OutputDebugString(buf);
+ 	}
+ 	if (hints)
+@@ -100,6 +108,9 @@
+ 	else child->SetCacheHints(CACHE_NOTHING, 0);
+ 	if (clamp&1) // clip input to 16-235/16-240 range
+ 	{
++#ifdef COLORMATRIX_NO_CPP_EXCEPTIONS
++		child = env->Invoke("Limiter", child).AsClip();
++#else
+ 		try
+ 		{
+ 			child = env->Invoke("Limiter", child).AsClip();
+@@ -112,13 +123,19 @@
+ 		{
+ 			env->ThrowError("ColorMatrix:  avisynth error invoking Limiter (%s)!", e.msg);
+ 		}
++#endif
+ 	}
+ 	if (interlaced)
+ 	{
+ 		if (child->GetVideoInfo().IsFieldBased())
+ 			env->ThrowError("ColorMatrix:  input must be framebased for interlaced=true " \
+ 				"processing (use AssumeFrameBased())!");
+-		try 
++#ifdef COLORMATRIX_NO_CPP_EXCEPTIONS
++		child = env->Invoke("InternalCache", child).AsClip();
++		child->SetCacheHints(CACHE_RANGE, 1);
++		child = env->Invoke("SeparateFields", child).AsClip();
++#else
++		try
+ 		{
+ 			child = env->Invoke("InternalCache", child).AsClip();
+ 			child->SetCacheHints(CACHE_RANGE, 1);
+@@ -134,6 +151,7 @@
+ 			env->ThrowError("ColorMatrix:  avisynth error invoking" \
+ 				" InternalCache and SeparateFields (%s)!", e.msg);
+ 		}
++#endif
+ 		vi.num_frames *= 2;
+ 		vi.fps_numerator *= 2;
+ 		vi.height >>= 1;
+@@ -160,7 +178,7 @@
+ 		if (debug)
+ 		{
+ 			sprintf(buf,"ColorMatrix:%u:  number of detected processors = %d\n", 
+-				GetCurrentThreadId(), threads);
++				(unsigned)GetCurrentThreadId(), threads);
+ 			OutputDebugString(buf);
+ 		}
+ 	}
+@@ -195,9 +213,15 @@
+ 		}
+ 		pssInfo[i]->jobFinished = CreateEvent(NULL, TRUE, TRUE, NULL);
+ 		pssInfo[i]->nextJob = CreateEvent(NULL, TRUE, FALSE, NULL);
+-		thds[i] = vi.IsYUY2() ? 
++#ifdef COLORMATRIX_PORTABLE_BUILD
++		thds[i] = vi.IsYUY2() ?
++			CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)&processFrame_YUY2, (void*)(pssInfo[i]), 0, (DWORD*)&tids[i]) :
++			CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)&processFrame_YV12, (void*)(pssInfo[i]), 0, (DWORD*)&tids[i]);
++#else
++		thds[i] = vi.IsYUY2() ?
+ 			(HANDLE)_beginthreadex(0,0,&processFrame_YUY2,(void*)(pssInfo[i]),0,&tids[i]) :
+ 			(HANDLE)_beginthreadex(0,0,&processFrame_YV12,(void*)(pssInfo[i]),0,&tids[i]);
++#endif
+ 	}
+ }
+ 
+@@ -229,7 +253,7 @@
+ int num_processors()
+ {
+ 	int pcount = 0;
+-	DWORD p_aff, s_aff;
++	DWORD_PTR p_aff, s_aff;
+ 	GetProcessAffinityMask(GetCurrentProcess(), &p_aff, &s_aff);
+ 	for(; p_aff != 0; p_aff>>=1) 
+ 		pcount += (p_aff&1);
+@@ -263,7 +287,7 @@
+ 			{
+ 				char buf[256];
+ 				sprintf(buf,"ColorMatrix:%u:  frame %d:  YUY2 range conversion only.\n", 
+-					GetCurrentThreadId(), pss->cs->n);
++					(unsigned)GetCurrentThreadId(), pss->cs->n);
+ 				OutputDebugString(buf);
+ 			}
+ 			const int *ylut = pss->ylut;
+@@ -287,7 +311,7 @@
+ 			{
+ 				char buf[256];
+ 				sprintf(buf,"ColorMatrix:%u:  frame %d:  using YUY2 %s conversion.\n", 
+-					GetCurrentThreadId(), pss->cs->n, CTS2(pss->cs->modef));
++					(unsigned)GetCurrentThreadId(), pss->cs->n, CTS2(pss->cs->modef));
+ 				OutputDebugString(buf);
+ 			}
+ 			const int c1 = pss->cs->c1;
+@@ -335,7 +359,7 @@
+ 			{
+ 				char buf[256];
+ 				sprintf(buf,"ColorMatrix:%u:  frame %d:  YV12 range conversion only.\n", 
+-					GetCurrentThreadId(), pss->cs->n);
++					(unsigned)GetCurrentThreadId(), pss->cs->n);
+ 				OutputDebugString(buf);
+ 			}
+ 			for (int b=0; b<3; ++b)
+@@ -379,14 +403,15 @@
+ 			const int src_pitch = pss->src_pitch;
+ 			const int dst_pitch = pss->dst_pitch;
+ 			const int c1 = pss->cs->c1;
+-			if (c1 == 65536 && (cpu&CPUF_SSE2) && 
+-				!((int(srcp)|int(dstp)|widtha|dst_pitch|src_pitch)&15)) 
++#ifndef COLORMATRIX_C_ONLY
++			if (c1 == 65536 && (cpu&CPUF_SSE2) &&
++				!((ULONG_PTR(srcp)|ULONG_PTR(dstp)|widtha|dst_pitch|src_pitch)&15))
+ 			{
+ 				if (debug)
+ 				{
+ 					char buf[256];
+ 					sprintf(buf,"ColorMatrix:%u:  frame %d:  using YV12 %s conversion (SSE2).\n", 
+-						GetCurrentThreadId(), pss->cs->n, CTS2(pss->cs->modef));
++						(unsigned)GetCurrentThreadId(), pss->cs->n, CTS2(pss->cs->modef));
+ 					OutputDebugString(buf);
+ 				}
+ 				(find_YV12_SIMD(pss->cs->modef, true))(ps);
+@@ -397,18 +422,19 @@
+ 				{
+ 					char buf[256];
+ 					sprintf(buf,"ColorMatrix:%u:  frame %d:  using YV12 %s conversion (MMX).\n", 
+-						GetCurrentThreadId(), pss->cs->n, CTS2(pss->cs->modef));
++						(unsigned)GetCurrentThreadId(), pss->cs->n, CTS2(pss->cs->modef));
+ 					OutputDebugString(buf);
+ 				}
+ 				(find_YV12_SIMD(pss->cs->modef, false))(ps);
+ 			}
+ 			else
++#endif
+ 			{
+ 				if (debug)
+ 				{
+ 					char buf[256];
+-					sprintf(buf,"ColorMatrix:%u:  frame %d:  using YV12 %s conversion (C).\n", 
+-						GetCurrentThreadId(), pss->cs->n, CTS2(pss->cs->modef));
++					sprintf(buf,"ColorMatrix:%u:  frame %d:  using YV12 %s conversion (C).\n",
++						(unsigned)GetCurrentThreadId(), pss->cs->n, CTS2(pss->cs->modef));
+ 					OutputDebugString(buf);
+ 				}
+ 				const unsigned char *srcpU = pss->srcpU;
+@@ -468,7 +494,7 @@
+ 		if (debug)
+ 		{
+ 			sprintf(buf,"ColorMatrix:%u:  frame %d:  detected colorimetry from d2v = %d (%s)\n", 
+-				GetCurrentThreadId(), n, temp, CTS(temp));
++				(unsigned)GetCurrentThreadId(), n, temp, CTS(temp));
+ 			OutputDebugString(buf);
+ 		}
+ 		modef = findMode(temp);
+@@ -477,7 +503,7 @@
+ 			if (debug)
+ 			{
+ 				sprintf(buf,"ColorMatrix:%u:  frame %d:  returning src frame... no conversion " \
+-					"required (d2v)\n", GetCurrentThreadId(), n);
++					"required (d2v)\n", (unsigned)GetCurrentThreadId(), n);
+ 				OutputDebugString(buf);
+ 			}
+ 			return src;
+@@ -495,7 +521,7 @@
+ 		if (debug)
+ 		{
+ 			sprintf(buf,"ColorMatrix:%u:  frame %d:  detected hint = %d (%s)\n", 
+-				GetCurrentThreadId(), n, temp, CTS(temp));
++				(unsigned)GetCurrentThreadId(), n, temp, CTS(temp));
+ 			OutputDebugString(buf);
+ 		}
+ 		modef = findMode(temp);
+@@ -504,7 +530,7 @@
+ 			if (debug)
+ 			{
+ 				sprintf(buf,"ColorMatrix:%u:  frame %d:  returning src frame... no conversion " \
+-					"required (hints)\n", GetCurrentThreadId(), n);
++					"required (hints)\n", (unsigned)GetCurrentThreadId(), n);
+ 				OutputDebugString(buf);
+ 			}
+ 			return src;
+@@ -519,6 +545,8 @@
+ 	const int dst_height = dst->GetHeight();
+ 	if (modef >= 0)
+ 	{
++		if (modef >= YUV_CONVERSION_COUNT)
++			env->ThrowError("ColorMatrix: internal conversion mode index is out of range!");
+ 		css.c1 = yuv_convert[modef][0][0];
+ 		css.c2 = yuv_convert[modef][0][1];
+ 		css.c3 = yuv_convert[modef][0][2]; 
+@@ -682,14 +710,18 @@
+ 
+ int ColorMatrix::findMode(int color)
+ {
+-	if (color == 1 && dest != 0) 
+-		return dest;
+-	else if (color == 4 && dest != 1)
+-		return 4+dest;
+-	else if ((color == 5 || color == 6) && dest != 2)
+-		return 8+dest;
+-	else if (color == 7 && dest != 3)
+-		return 12+dest;
++	int detectedSource = -1;
++	if (color == 1)
++		detectedSource = 0; // Rec.709
++	else if (color == 4)
++		detectedSource = 1; // FCC
++	else if (color == 5 || color == 6)
++		detectedSource = 2; // Rec.601 / SMPTE 170M
++	else if (color == 7)
++		detectedSource = 3; // SMPTE 240M
++
++	if (detectedSource >= 0 && detectedSource != dest)
++		return MATRIX_MODE_INDEX(detectedSource, dest);
+ 	if (inputFR != outputFR)
+ 		return -2;
+ 	return -1;
+@@ -697,29 +729,39 @@
+ 
+ void (*find_YV12_SIMD(int modef, bool sse2))(void *ps)
+ {
+-	if (modef == 1 || modef == 2 || modef == 3 || 
+-		modef == 13 || modef == 14)
++#ifdef COLORMATRIX_C_ONLY
++	(void)modef;
++	(void)sse2;
++	return NULL;
++#else
++	/*
++	 * These groups are the original four mathematical SIMD kernels remapped
++	 * to the five-wide table introduced with Rec.2020 support.
++	 */
++	if (modef == 1 || modef == 2 || modef == 3 ||
++		modef == 16 || modef == 17)
+ 	{
+ 		if (sse2) return &conv1_YV12_SSE2;
+ 		return &conv1_YV12_MMX;
+ 	}
+-	else if (modef == 4 || modef == 7 || modef == 8 || 
+-		modef == 11 || modef == 12)
++	else if (modef == 5 || modef == 8 || modef == 10 ||
++		modef == 13 || modef == 15)
+ 	{
+ 		if (sse2) return &conv2_YV12_SSE2;
+ 		return &conv2_YV12_MMX;
+ 	}
+-	else if (modef == 6)
++	else if (modef == 7)
+ 	{
+ 		if (sse2) return &conv3_YV12_SSE2;
+ 		return &conv3_YV12_MMX;
+ 	}
+-	else if (modef == 9)
++	else if (modef == 11)
+ 	{
+ 		if (sse2) return &conv4_YV12_SSE2;
+ 		return &conv4_YV12_MMX;
+ 	}
+ 	return NULL;
++#endif
+ }
+ 
+ int ColorMatrix::parseD2V(const char *d2v)
+@@ -935,7 +977,7 @@
+ 		yuv_coeff[i][2][2] = (1.0-yuv_coeff[i][0][2])*rscale;
+ 	}
+     double rgb_coeffd[YUV_COEFFS_LUMA_COUNT][3][3];
+-    double yuv_convertd[YUV_COEFFS_LUMA_COUNT * YUV_COEFFS_LUMA_COUNT][3][3];
++    double yuv_convertd[YUV_CONVERSION_COUNT][3][3];
+     for (int i = 0; i<YUV_COEFFS_LUMA_COUNT; ++i)
+ 		inverse3x3(rgb_coeffd[i], yuv_coeff[i]);
+ 	double yiscale = 1.0/255.0, uviscale = 1.0/255.0;
+@@ -999,6 +1041,9 @@
+ 		args[12].AsInt(0),args[13].AsInt(3),env);
+ 	if (interlaced) // interlaced
+ 	{
++#ifdef COLORMATRIX_NO_CPP_EXCEPTIONS
++		return_clip = env->Invoke("Weave", return_clip).AsClip();
++#else
+ 		try
+ 		{
+ 			return_clip = env->Invoke("Weave", return_clip).AsClip();
+@@ -1007,13 +1052,17 @@
+ 		{
+ 			env->ThrowError("ColorMatrix:  error invoking Weave (not found)!");
+ 		}
+-		catch (AvisynthError e) 
++		catch (AvisynthError e)
+ 		{
+ 			env->ThrowError("ColorMatrix:  avisynth error invoking Weave (%s)!", e.msg);
+ 		}
++#endif
+ 	}
+ 	if (clamp>1) // clip output to 16-235/16-240 range
+ 	{
++#ifdef COLORMATRIX_NO_CPP_EXCEPTIONS
++		return_clip = env->Invoke("Limiter", return_clip).AsClip();
++#else
+ 		try
+ 		{
+ 			return_clip = env->Invoke("Limiter", return_clip).AsClip();
+@@ -1026,14 +1075,47 @@
+ 		{
+ 			env->ThrowError("ColorMatrix:  avisynth error invoking Limiter (%s)!", e.msg);
+ 		}
++#endif
+ 	}
+ 	return return_clip;
+ }
+ 
+-extern "C" __declspec(dllexport) const char* __stdcall AvisynthPluginInit2(IScriptEnvironment* env) 
++#if defined(COLORMATRIX_CLASSIC_API3_X64)
++/*
++ * This real classic interface-v6/API3 path is used by the reporter-validated
++ * x64 source build (SHA-256
++ * 2291DDA6A7FEE1D167F79D8846DB19BF4E974A22D795CB01D7BBF0B9764008EF).
++ * It was confirmed in Selur Hybrid 2026.03.21.1 on Windows 10 Pro 22H2 x64:
++ * no crash and no erroneous color shift during Rec.601-to-Rec.709 conversion.
++ */
++extern "C" __declspec(dllexport) const char* __stdcall AvisynthPluginInit3(
++	IScriptEnvironment* env, const AVS_Linkage* const vectors)
++{
++	AVS_linkage = vectors;
++	env->AddFunction("ColorMatrix", "c[mode]s[source]i[dest]i[clamp]i[interlaced]b" \
++		"[inputFR]b[outputFR]b[hints]b[d2v]s[debug]b[threads]i[thrdmthd]i[opt]i",
++		Create_ColorMatrix, 0);
++	return 0;
++}
++#else
++extern "C" __declspec(dllexport) const char* __stdcall AvisynthPluginInit2(IScriptEnvironment* env)
+ {
+ 	env->AddFunction("ColorMatrix", "c[mode]s[source]i[dest]i[clamp]i[interlaced]b" \
+-		"[inputFR]b[outputFR]b[hints]b[d2v]s[debug]b[threads]i[thrdmthd]i[opt]i", 
++		"[inputFR]b[outputFR]b[hints]b[d2v]s[debug]b[threads]i[thrdmthd]i[opt]i",
+ 		Create_ColorMatrix, 0);
+-    return 0;
+-}
+\ No newline at end of file
++	return 0;
++}
++#ifdef COLORMATRIX_PORTABLE_BUILD
++/*
++ * Compatibility API3 entry point retained for the proven x86 source build.
++ * The x64 source build uses the real classic-v6 AVS_Linkage API above.
++ */
++static const void *volatile ColorMatrix_AVS_linkage = 0;
++extern "C" __declspec(dllexport) const char* __stdcall AvisynthPluginInit3(
++	IScriptEnvironment* env, const void* vectors)
++{
++	ColorMatrix_AVS_linkage = vectors;
++	return AvisynthPluginInit2(env);
++}
++#endif
++#endif
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/colormatrix/ColorMatrix.h ColorMatrix-2.6.1-fixed-r3/colormatrix/ColorMatrix.h
+--- original/ColorMatrix-master/colormatrix/ColorMatrix.h	2018-02-22 08:16:56.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/colormatrix/ColorMatrix.h	2026-08-08 07:47:52.000000000 +0000
+@@ -1,9 +1,9 @@
+ /*
+-**                 ColorMatrix v2.5 for Avisynth 2.5.x
++**                 ColorMatrix v2.6.1 for AviSynth
+ **
+ **   ColorMatrix 2.0 is based on the original ColorMatrix filter by Wilbert 
+ **   Dijkhof.  It adds the ability to convert between any of: Rec.709, FCC, 
+-**   Rec.601, and SMPTE 240M. It also makes pre and post clipping optional,
++**   Rec.601, SMPTE 240M, and Rec.2020. It also makes pre and post clipping optional,
+ **   adds range expansion/contraction, and more...
+ **
+ **   Copyright (C) 2006-2009 Kevin Stone
+@@ -30,10 +30,14 @@
+ #include <xmmintrin.h>
+ #include <process.h>
+ #include <float.h>
++#if defined(COLORMATRIX_CLASSIC_API3_X64)
++#include "avisynth26_api3_x64.h"
++#else
+ #include "avisynth.h"
++#endif
+ 
+-#define VERSION "2.6"
+-#define DATE "02/22/2018"
++#define VERSION "2.6.1"
++#define DATE "08/06/2026"
+ 
+ #define MAGIC_NUMBER 0xdeadbeef
+ #define COLORIMETRY 0x0000001C
+@@ -45,25 +49,33 @@
+ 				n == 7 ? "SMPTE 240M" : \
+ 				n == -1 ? "no hint found" : \
+ 				"unknown"
+-#define CTS2(n) n == 1 ? "Rec.709->FCC" : \
+-				n == 2 ? "Rec.709->Rec.601" : \
+-				n == 3 ? "Rec.709->SMPTE 240M" : \
+-				n == 4 ? "FCC->Rec.709" : \
+-				n == 6 ? "FCC->Rec.601" : \
+-				n == 7 ? "FCC->SMPTE 240M" : \
+-				n == 8 ? "Rec.601->Rec.709" : \
+-				n == 9 ? "Rec.601->FCC" : \
+-				n == 11 ? "Rec.601->SMPTE 240M" : \
+-				n == 12 ? "SMPTE 240M->Rec.709" : \
+-				n == 13 ? "SMPTE 240M->FCC" : \
+-				n == 14 ? "SMPTE 240M->Rec.601" : \
+-				"unknown"
++#define YUV_COEFFS_LUMA_COUNT 5
++#define YUV_CONVERSION_COUNT (YUV_COEFFS_LUMA_COUNT * YUV_COEFFS_LUMA_COUNT)
++#define MATRIX_MODE_INDEX(source, dest) ((source) * YUV_COEFFS_LUMA_COUNT + (dest))
++
++/*
++ * Keep diagnostic mode names in the same five-wide, row-major order as
++ * yuv_convert.  ColorMatrix 2.6 retained the old four-wide diagnostic table
++ * when Rec.2020 was added, which hid the stale source*4+dest indexing bug.
++ */
++static const char *const yuv_conversion_names[YUV_CONVERSION_COUNT] =
++{
++	"Rec.709->Rec.709", "Rec.709->FCC", "Rec.709->Rec.601", "Rec.709->SMPTE 240M", "Rec.709->Rec.2020",
++	"FCC->Rec.709", "FCC->FCC", "FCC->Rec.601", "FCC->SMPTE 240M", "FCC->Rec.2020",
++	"Rec.601->Rec.709", "Rec.601->FCC", "Rec.601->Rec.601", "Rec.601->SMPTE 240M", "Rec.601->Rec.2020",
++	"SMPTE 240M->Rec.709", "SMPTE 240M->FCC", "SMPTE 240M->Rec.601", "SMPTE 240M->SMPTE 240M", "SMPTE 240M->Rec.2020",
++	"Rec.2020->Rec.709", "Rec.2020->FCC", "Rec.2020->Rec.601", "Rec.2020->SMPTE 240M", "Rec.2020->Rec.2020"
++};
++
++static const char *ColorMatrixConversionName(int mode)
++{
++	return mode >= 0 && mode < YUV_CONVERSION_COUNT ? yuv_conversion_names[mode] : "unknown";
++}
++#define CTS2(n) ColorMatrixConversionName(n)
+ #define ns(n) n < 0 ? int(n*65536.0-0.5+DBL_EPSILON) : int(n*65536.0+0.5)
+ #define CB(n) max(min((n),255),0)
+ #define simd_scale(n) n >= 65536 ? (n+2)>>2 : n >= 32768 ? (n+1)>>1 : n;
+ 
+-#define YUV_COEFFS_LUMA_COUNT 5
+-
+ static double yuv_coeffs_luma[YUV_COEFFS_LUMA_COUNT][3] =
+ { 
+   +0.7152, +0.0722, +0.2126, // Rec.709 (0)
+@@ -118,7 +130,7 @@
+ {
+ private:
+ 	char buf[256];
+-    int yuv_convert[YUV_COEFFS_LUMA_COUNT * YUV_COEFFS_LUMA_COUNT][3][3];
++    int yuv_convert[YUV_CONVERSION_COUNT][3][3];
+ 	const char *mode, *d2v;
+ 	unsigned char *d2vArray;
+ 	bool hints, interlaced, debug;
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/colormatrix/ColorMatrix.rc ColorMatrix-2.6.1-fixed-r3/colormatrix/ColorMatrix.rc
+--- original/ColorMatrix-master/colormatrix/ColorMatrix.rc	2018-02-22 08:16:56.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/colormatrix/ColorMatrix.rc	2026-08-06 00:00:00.000000000 +0000
+@@ -51,8 +51,8 @@
+ //
+ 
+ VS_VERSION_INFO VERSIONINFO
+- FILEVERSION 2,6,0,0
+- PRODUCTVERSION 2,6,0,0
++ FILEVERSION 2,6,1,0
++ PRODUCTVERSION 2,6,1,0
+  FILEFLAGSMASK 0x17L
+ #ifdef _DEBUG
+  FILEFLAGS 0x1L
+@@ -67,10 +67,10 @@
+     BEGIN
+         BLOCK "040904b0"
+         BEGIN
+-            VALUE "FileDescription", "ColorMatrix v2.6 for Avisynth 2.5"
+-            VALUE "FileVersion", "2.6.0.0"
++            VALUE "FileDescription", "ColorMatrix v2.6.1 for AviSynth"
++            VALUE "FileVersion", "2.6.1.0"
+             VALUE "LegalCopyright", "Copyright (C) 2006-2018  Kevin Stone, SoraYuki"
+-            VALUE "ProductVersion", "2.6.0.0"
++            VALUE "ProductVersion", "2.6.1.0"
+         END
+     END
+     BLOCK "VarFileInfo"
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/colormatrix/ColorMatrix_ASM.cpp ColorMatrix-2.6.1-fixed-r3/colormatrix/ColorMatrix_ASM.cpp
+--- original/ColorMatrix-master/colormatrix/ColorMatrix_ASM.cpp	2018-02-22 08:16:56.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/colormatrix/ColorMatrix_ASM.cpp	2026-08-06 00:00:00.000000000 +0000
+@@ -1,5 +1,5 @@
+ /*
+-**                 ColorMatrix v2.5 for Avisynth 2.5.x
++**                 ColorMatrix v2.6.1 for AviSynth
+ **
+ **   ColorMatrix 2.0 is based on the original ColorMatrix filter by Wilbert 
+ **   Dijkhof.  It adds the ability to convert between any of: Rec.709, FCC, 
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/colormatrix/avisynth.h ColorMatrix-2.6.1-fixed-r3/colormatrix/avisynth.h
+--- original/ColorMatrix-master/colormatrix/avisynth.h	2018-02-22 08:16:56.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/colormatrix/avisynth.h	2026-08-06 00:00:00.000000000 +0000
+@@ -337,7 +337,7 @@
+   VideoFrame(VideoFrameBuffer* _vfb, int _offset, int _pitch, int _row_size, int _height);
+   VideoFrame(VideoFrameBuffer* _vfb, int _offset, int _pitch, int _row_size, int _height, int _offsetU, int _offsetV, int _pitchUV);
+ 
+-  void* operator new(unsigned size);
++  void* operator new(size_t size);
+ // TESTME: OFFSET U/V may be switched to what could be expected from AVI standard!
+ public:
+   int GetPitch() const { return pitch; }
+@@ -565,9 +565,11 @@
+       src->clip->AddRef();
+     if (!init && IsClip() && clip)
+       clip->Release();
+-    // make sure this copies the whole struct!
+-    ((__int32*)this)[0] = ((__int32*)src)[0];
+-    ((__int32*)this)[1] = ((__int32*)src)[1];
++    // Copy fields explicitly.  The historical two-DWORD copy truncates the
++    // union member on 64-bit builds.
++    type = src->type;
++    array_size = src->array_size;
++    clip = src->clip;
+   }
+ };
+ 
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/colormatrix/avisynth26_api3_x64.h ColorMatrix-2.6.1-fixed-r3/colormatrix/avisynth26_api3_x64.h
+--- original/ColorMatrix-master/colormatrix/avisynth26_api3_x64.h	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/colormatrix/avisynth26_api3_x64.h	2026-08-09 07:49:14.665857199 +0000
+@@ -0,0 +1,645 @@
++// Minimal classic AviSynth 2.6 C++ API3 header for the ColorMatrix x64 build.
++//
++// This header deliberately targets the ABI used by Hybrid's classic x64
++// AviSynth runtime. It follows the classic interface-v6 AVS_Linkage table,
++// with the x64 data layouts used by the historical AviSynth64 port. The
++// AVS_Linkage Size field is an int, matching Hybrid's runtime and the
++// maintained AviSynth C++ header's classic-v6 compatibility prefix.
++//
++// Only the public API surface needed to build ColorMatrix is included.
++//
++// Runtime validation recorded 2026-08-09:
++// the source-built x64 ColorMatrix64.dll produced with this header
++// (SHA-256 2291DDA6A7FEE1D167F79D8846DB19BF4E974A22D795CB01D7BBF0B9764008EF)
++// was confirmed by the reporter in Selur Hybrid 2026.03.21.1 on Windows 10
++// Pro 22H2 x64. It completed the Rec.601-to-Rec.709 workflow without a crash
++// and without the erroneous FCC-to-SMPTE-240M color shift. This validates the
++// reported Hybrid workflow, not every possible classic AviSynth host.
++
++#ifndef COLORMATRIX_AVISYNTH26_API3_X64_H
++#define COLORMATRIX_AVISYNTH26_API3_X64_H
++
++#ifndef AVISYNTH64
++#define AVISYNTH64 1
++#endif
++
++enum { AVISYNTH_INTERFACE_VERSION = 6 };
++
++#include <windef.h>
++#include <stddef.h>
++
++#pragma pack(push, 8)
++
++#define FRAME_ALIGN 16
++
++typedef float SFLOAT;
++
++enum {
++  SAMPLE_INT8  = 1 << 0,
++  SAMPLE_INT16 = 1 << 1,
++  SAMPLE_INT24 = 1 << 2,
++  SAMPLE_INT32 = 1 << 3,
++  SAMPLE_FLOAT = 1 << 4
++};
++
++enum {
++  PLANAR_Y = 1 << 0,
++  PLANAR_U = 1 << 1,
++  PLANAR_V = 1 << 2,
++  PLANAR_ALIGNED = 1 << 3,
++  PLANAR_Y_ALIGNED = PLANAR_Y | PLANAR_ALIGNED,
++  PLANAR_U_ALIGNED = PLANAR_U | PLANAR_ALIGNED,
++  PLANAR_V_ALIGNED = PLANAR_V | PLANAR_ALIGNED,
++  PLANAR_A = 1 << 4,
++  PLANAR_R = 1 << 5,
++  PLANAR_G = 1 << 6,
++  PLANAR_B = 1 << 7,
++  PLANAR_A_ALIGNED = PLANAR_A | PLANAR_ALIGNED,
++  PLANAR_R_ALIGNED = PLANAR_R | PLANAR_ALIGNED,
++  PLANAR_G_ALIGNED = PLANAR_G | PLANAR_ALIGNED,
++  PLANAR_B_ALIGNED = PLANAR_B | PLANAR_ALIGNED
++};
++
++class AvisynthError {
++public:
++  const char* const msg;
++  AvisynthError(const char* _msg) : msg(_msg) {}
++};
++
++struct __single_inheritance VideoInfo;
++class __single_inheritance VideoFrameBuffer;
++class __single_inheritance VideoFrame;
++class IClip;
++class __single_inheritance PClip;
++class __single_inheritance PVideoFrame;
++class IScriptEnvironment;
++class __single_inheritance AVSValue;
++
++/*
++ * Classic AviSynth 2.6 C++ plugin linkage table.
++ *
++ * IMPORTANT: Hybrid's x64 runtime exposes Size as a 32-bit int. Natural
++ * 8-byte alignment places the first member-function pointer at offset 8.
++ * Do not change the field order.
++ */
++struct AVS_Linkage {
++  int Size;
++
++  // VideoInfo (42 entries)
++  bool    (VideoInfo::*HasVideo)() const;
++  bool    (VideoInfo::*HasAudio)() const;
++  bool    (VideoInfo::*IsRGB)() const;
++  bool    (VideoInfo::*IsRGB24)() const;
++  bool    (VideoInfo::*IsRGB32)() const;
++  bool    (VideoInfo::*IsYUV)() const;
++  bool    (VideoInfo::*IsYUY2)() const;
++  bool    (VideoInfo::*IsYV24)() const;
++  bool    (VideoInfo::*IsYV16)() const;
++  bool    (VideoInfo::*IsYV12)() const;
++  bool    (VideoInfo::*IsYV411)() const;
++  bool    (VideoInfo::*IsY8)() const;
++  bool    (VideoInfo::*IsColorSpace)(int c_space) const;
++  bool    (VideoInfo::*Is)(int property) const;
++  bool    (VideoInfo::*IsPlanar)() const;
++  bool    (VideoInfo::*IsFieldBased)() const;
++  bool    (VideoInfo::*IsParityKnown)() const;
++  bool    (VideoInfo::*IsBFF)() const;
++  bool    (VideoInfo::*IsTFF)() const;
++  bool    (VideoInfo::*IsVPlaneFirst)() const;
++  int     (VideoInfo::*BytesFromPixels)(int pixels) const;
++  int     (VideoInfo::*RowSize)(int plane) const;
++  int     (VideoInfo::*BMPSize)() const;
++  __int64 (VideoInfo::*AudioSamplesFromFrames)(int frames) const;
++  int     (VideoInfo::*FramesFromAudioSamples)(__int64 samples) const;
++  __int64 (VideoInfo::*AudioSamplesFromBytes)(__int64 bytes) const;
++  __int64 (VideoInfo::*BytesFromAudioSamples)(__int64 samples) const;
++  int     (VideoInfo::*AudioChannels)() const;
++  int     (VideoInfo::*SampleType)() const;
++  bool    (VideoInfo::*IsSampleType)(int testtype) const;
++  int     (VideoInfo::*SamplesPerSecond)() const;
++  int     (VideoInfo::*BytesPerAudioSample)() const;
++  void    (VideoInfo::*SetFieldBased)(bool isfieldbased);
++  void    (VideoInfo::*Set)(int property);
++  void    (VideoInfo::*Clear)(int property);
++  int     (VideoInfo::*GetPlaneWidthSubsampling)(int plane) const;
++  int     (VideoInfo::*GetPlaneHeightSubsampling)(int plane) const;
++  int     (VideoInfo::*BitsPerPixel)() const;
++  int     (VideoInfo::*BytesPerChannelSample)() const;
++  void    (VideoInfo::*SetFPS)(unsigned numerator, unsigned denominator);
++  void    (VideoInfo::*MulDivFPS)(unsigned multiplier, unsigned divisor);
++  bool    (VideoInfo::*IsSameColorspace)(const VideoInfo& vi) const;
++
++  // VideoFrameBuffer (5 entries)
++  const BYTE* (VideoFrameBuffer::*VFBGetReadPtr)() const;
++  BYTE*       (VideoFrameBuffer::*VFBGetWritePtr)();
++  size_t      (VideoFrameBuffer::*GetDataSize)() const;
++  int         (VideoFrameBuffer::*GetSequenceNumber)() const;
++  int         (VideoFrameBuffer::*GetRefcount)() const;
++
++  // VideoFrame (9 entries)
++  int               (VideoFrame::*GetPitch)(int plane) const;
++  int               (VideoFrame::*GetRowSize)(int plane) const;
++  int               (VideoFrame::*GetHeight)(int plane) const;
++  VideoFrameBuffer* (VideoFrame::*GetFrameBuffer)() const;
++  size_t            (VideoFrame::*GetOffset)(int plane) const;
++  const BYTE*       (VideoFrame::*VFGetReadPtr)(int plane) const;
++  bool              (VideoFrame::*IsWritable)() const;
++  BYTE*             (VideoFrame::*VFGetWritePtr)(int plane) const;
++  void              (VideoFrame::*VideoFrame_DESTRUCTOR)();
++
++  // PClip (6 entries)
++  void (PClip::*PClip_CONSTRUCTOR0)();
++  void (PClip::*PClip_CONSTRUCTOR1)(const PClip& x);
++  void (PClip::*PClip_CONSTRUCTOR2)(IClip* x);
++  void (PClip::*PClip_OPERATOR_ASSIGN0)(IClip* x);
++  void (PClip::*PClip_OPERATOR_ASSIGN1)(const PClip& x);
++  void (PClip::*PClip_DESTRUCTOR)();
++
++  // PVideoFrame (6 entries)
++  void (PVideoFrame::*PVideoFrame_CONSTRUCTOR0)();
++  void (PVideoFrame::*PVideoFrame_CONSTRUCTOR1)(const PVideoFrame& x);
++  void (PVideoFrame::*PVideoFrame_CONSTRUCTOR2)(VideoFrame* x);
++  void (PVideoFrame::*PVideoFrame_OPERATOR_ASSIGN0)(VideoFrame* x);
++  void (PVideoFrame::*PVideoFrame_OPERATOR_ASSIGN1)(const PVideoFrame& x);
++  void (PVideoFrame::*PVideoFrame_DESTRUCTOR)();
++
++  // AVSValue (31 entries)
++  void            (AVSValue::*AVSValue_CONSTRUCTOR0)();
++  void            (AVSValue::*AVSValue_CONSTRUCTOR1)(IClip* c);
++  void            (AVSValue::*AVSValue_CONSTRUCTOR2)(const PClip& c);
++  void            (AVSValue::*AVSValue_CONSTRUCTOR3)(bool b);
++  void            (AVSValue::*AVSValue_CONSTRUCTOR4)(int i);
++  void            (AVSValue::*AVSValue_CONSTRUCTOR5)(float f);
++  void            (AVSValue::*AVSValue_CONSTRUCTOR6)(double f);
++  void            (AVSValue::*AVSValue_CONSTRUCTOR7)(const char* s);
++  void            (AVSValue::*AVSValue_CONSTRUCTOR8)(const AVSValue* a, int size);
++  void            (AVSValue::*AVSValue_CONSTRUCTOR9)(const AVSValue& v);
++  void            (AVSValue::*AVSValue_DESTRUCTOR)();
++  AVSValue&       (AVSValue::*AVSValue_OPERATOR_ASSIGN)(const AVSValue& v);
++  const AVSValue& (AVSValue::*AVSValue_OPERATOR_INDEX)(int index) const;
++  bool            (AVSValue::*Defined)() const;
++  bool            (AVSValue::*IsClip)() const;
++  bool            (AVSValue::*IsBool)() const;
++  bool            (AVSValue::*IsInt)() const;
++  bool            (AVSValue::*IsFloat)() const;
++  bool            (AVSValue::*IsString)() const;
++  bool            (AVSValue::*IsArray)() const;
++  PClip           (AVSValue::*AsClip)() const;
++  bool            (AVSValue::*AsBool1)() const;
++  int             (AVSValue::*AsInt1)() const;
++  const char*     (AVSValue::*AsString1)() const;
++  double          (AVSValue::*AsFloat1)() const;
++  bool            (AVSValue::*AsBool2)(bool def) const;
++  int             (AVSValue::*AsInt2)(int def) const;
++  double          (AVSValue::*AsDblDef)(double def) const;
++  double          (AVSValue::*AsFloat2)(float def) const;
++  const char*     (AVSValue::*AsString2)(const char* def) const;
++  int             (AVSValue::*ArraySize)() const;
++};
++
++extern const AVS_Linkage* AVS_linkage;
++
++#define AVS_HAS_ENTRY(entry) \
++  (AVS_linkage != 0 && (size_t)AVS_linkage->Size > offsetof(AVS_Linkage, entry))
++
++struct VideoInfo {
++  int width, height;
++  unsigned fps_numerator, fps_denominator;
++  int num_frames;
++  int pixel_type;
++  int audio_samples_per_second;
++  int sample_type;
++  __int64 num_audio_samples;
++  int nchannels;
++  int image_type;
++
++  enum {
++    CS_BGR = 1 << 28,
++    CS_YUV = 1 << 29,
++    CS_INTERLEAVED = 1 << 30,
++    CS_PLANAR = (int)(1U << 31),
++    CS_UNKNOWN = 0,
++    CS_BGR24 = (1 << 0) | CS_BGR | CS_INTERLEAVED,
++    CS_BGR32 = (1 << 1) | CS_BGR | CS_INTERLEAVED,
++    CS_YUY2 = (1 << 2) | CS_YUV | CS_INTERLEAVED,
++    CS_YV12 = (1 << 3) | CS_YUV | CS_PLANAR,
++    CS_I420 = (1 << 4) | CS_YUV | CS_PLANAR,
++    CS_IYUV = CS_I420,
++    IT_BFF = 1 << 0,
++    IT_TFF = 1 << 1,
++    IT_FIELDBASED = 1 << 2
++  };
++
++  bool IsYUY2() const {
++    return AVS_HAS_ENTRY(IsYUY2) ? (this->*(AVS_linkage->IsYUY2))() : false;
++  }
++  bool IsYV12() const {
++    return AVS_HAS_ENTRY(IsYV12) ? (this->*(AVS_linkage->IsYV12))() : false;
++  }
++  bool IsFieldBased() const {
++    return AVS_HAS_ENTRY(IsFieldBased) ? (this->*(AVS_linkage->IsFieldBased))() : false;
++  }
++  void SetFieldBased(bool value) {
++    if (AVS_HAS_ENTRY(SetFieldBased))
++      (this->*(AVS_linkage->SetFieldBased))(value);
++  }
++};
++
++class VideoFrameBuffer {
++  BYTE* const data;
++  const size_t data_size;
++  volatile long sequence_number;
++  volatile long refcount;
++
++protected:
++  VideoFrameBuffer(size_t);
++  VideoFrameBuffer();
++  ~VideoFrameBuffer();
++
++public:
++  const BYTE* GetReadPtr() const {
++    return AVS_HAS_ENTRY(VFBGetReadPtr) ? (this->*(AVS_linkage->VFBGetReadPtr))() : 0;
++  }
++  BYTE* GetWritePtr() {
++    return AVS_HAS_ENTRY(VFBGetWritePtr) ? (this->*(AVS_linkage->VFBGetWritePtr))() : 0;
++  }
++  size_t GetDataSize() const {
++    return AVS_HAS_ENTRY(GetDataSize) ? (this->*(AVS_linkage->GetDataSize))() : 0;
++  }
++  int GetSequenceNumber() const {
++    return AVS_HAS_ENTRY(GetSequenceNumber) ? (this->*(AVS_linkage->GetSequenceNumber))() : 0;
++  }
++  int GetRefcount() const {
++    return AVS_HAS_ENTRY(GetRefcount) ? (this->*(AVS_linkage->GetRefcount))() : 0;
++  }
++};
++
++class VideoFrame {
++  volatile long refcount;
++  VideoFrameBuffer* const vfb;
++  const size_t offset;
++  const int pitch, row_size, height;
++  const size_t offsetU, offsetV;
++  const int pitchUV, row_sizeUV, heightUV;
++
++  friend class PVideoFrame;
++  void AddRef();
++  void Release();
++
++  VideoFrame(VideoFrameBuffer*, size_t, int, int, int);
++  VideoFrame(VideoFrameBuffer*, size_t, int, int, int, size_t, size_t, int, int, int);
++
++public:
++  int GetPitch(int plane = 0) const {
++    return AVS_HAS_ENTRY(GetPitch) ? (this->*(AVS_linkage->GetPitch))(plane) : 0;
++  }
++  int GetRowSize(int plane = 0) const {
++    return AVS_HAS_ENTRY(GetRowSize) ? (this->*(AVS_linkage->GetRowSize))(plane) : 0;
++  }
++  int GetHeight(int plane = 0) const {
++    return AVS_HAS_ENTRY(GetHeight) ? (this->*(AVS_linkage->GetHeight))(plane) : 0;
++  }
++  VideoFrameBuffer* GetFrameBuffer() const {
++    return AVS_HAS_ENTRY(GetFrameBuffer) ? (this->*(AVS_linkage->GetFrameBuffer))() : 0;
++  }
++  size_t GetOffset(int plane = 0) const {
++    return AVS_HAS_ENTRY(GetOffset) ? (this->*(AVS_linkage->GetOffset))(plane) : 0;
++  }
++  const BYTE* GetReadPtr(int plane = 0) const {
++    return AVS_HAS_ENTRY(VFGetReadPtr) ? (this->*(AVS_linkage->VFGetReadPtr))(plane) : 0;
++  }
++  bool IsWritable() const {
++    return AVS_HAS_ENTRY(IsWritable) ? (this->*(AVS_linkage->IsWritable))() : false;
++  }
++  BYTE* GetWritePtr(int plane = 0) const {
++    return AVS_HAS_ENTRY(VFGetWritePtr) ? (this->*(AVS_linkage->VFGetWritePtr))(plane) : 0;
++  }
++  ~VideoFrame() {
++    if (AVS_HAS_ENTRY(VideoFrame_DESTRUCTOR))
++      (this->*(AVS_linkage->VideoFrame_DESTRUCTOR))();
++  }
++};
++
++// Old 2.5 cache-hint values retained for ColorMatrix's historical behavior.
++enum {
++  CACHE_NOTHING = 0,
++  CACHE_RANGE = 1,
++  CACHE_ALL = 2,
++  CACHE_AUDIO = 3,
++  CACHE_AUDIO_NONE = 4
++};
++
++class IClip {
++  friend class PClip;
++  friend class AVSValue;
++  volatile long refcnt;
++
++  void AddRef() { InterlockedIncrement((LONG*)&refcnt); }
++  void Release() {
++    if (InterlockedDecrement((LONG*)&refcnt) == 0)
++      delete this;
++  }
++
++public:
++  IClip() : refcnt(0) {}
++  virtual int __stdcall GetVersion() { return AVISYNTH_INTERFACE_VERSION; }
++  virtual PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env) = 0;
++  virtual bool __stdcall GetParity(int n) = 0;
++  virtual void __stdcall GetAudio(void* buf, __int64 start, __int64 count, IScriptEnvironment* env) = 0;
++  virtual int __stdcall SetCacheHints(int cachehints, int frame_range) = 0;
++  virtual const VideoInfo& __stdcall GetVideoInfo() = 0;
++  virtual __stdcall ~IClip() {}
++};
++
++class PClip {
++  IClip* p;
++
++public:
++  PClip() : p(0) {
++    if (AVS_HAS_ENTRY(PClip_CONSTRUCTOR0))
++      (this->*(AVS_linkage->PClip_CONSTRUCTOR0))();
++  }
++  PClip(const PClip& x) : p(0) {
++    if (AVS_HAS_ENTRY(PClip_CONSTRUCTOR1))
++      (this->*(AVS_linkage->PClip_CONSTRUCTOR1))(x);
++  }
++  PClip(IClip* x) : p(0) {
++    if (AVS_HAS_ENTRY(PClip_CONSTRUCTOR2))
++      (this->*(AVS_linkage->PClip_CONSTRUCTOR2))(x);
++  }
++  void operator=(IClip* x) {
++    if (AVS_HAS_ENTRY(PClip_OPERATOR_ASSIGN0))
++      (this->*(AVS_linkage->PClip_OPERATOR_ASSIGN0))(x);
++  }
++  void operator=(const PClip& x) {
++    if (AVS_HAS_ENTRY(PClip_OPERATOR_ASSIGN1))
++      (this->*(AVS_linkage->PClip_OPERATOR_ASSIGN1))(x);
++  }
++  IClip* operator->() const { return p; }
++  operator void*() const { return p; }
++  bool operator!() const { return !p; }
++  ~PClip() {
++    if (AVS_HAS_ENTRY(PClip_DESTRUCTOR))
++      (this->*(AVS_linkage->PClip_DESTRUCTOR))();
++  }
++};
++
++class PVideoFrame {
++  VideoFrame* p;
++
++public:
++  PVideoFrame() : p(0) {
++    if (AVS_HAS_ENTRY(PVideoFrame_CONSTRUCTOR0))
++      (this->*(AVS_linkage->PVideoFrame_CONSTRUCTOR0))();
++  }
++  PVideoFrame(const PVideoFrame& x) : p(0) {
++    if (AVS_HAS_ENTRY(PVideoFrame_CONSTRUCTOR1))
++      (this->*(AVS_linkage->PVideoFrame_CONSTRUCTOR1))(x);
++  }
++  PVideoFrame(VideoFrame* x) : p(0) {
++    if (AVS_HAS_ENTRY(PVideoFrame_CONSTRUCTOR2))
++      (this->*(AVS_linkage->PVideoFrame_CONSTRUCTOR2))(x);
++  }
++  void operator=(VideoFrame* x) {
++    if (AVS_HAS_ENTRY(PVideoFrame_OPERATOR_ASSIGN0))
++      (this->*(AVS_linkage->PVideoFrame_OPERATOR_ASSIGN0))(x);
++  }
++  void operator=(const PVideoFrame& x) {
++    if (AVS_HAS_ENTRY(PVideoFrame_OPERATOR_ASSIGN1))
++      (this->*(AVS_linkage->PVideoFrame_OPERATOR_ASSIGN1))(x);
++  }
++  VideoFrame* operator->() const { return p; }
++  operator void*() const { return p; }
++  bool operator!() const { return !p; }
++  ~PVideoFrame() {
++    if (AVS_HAS_ENTRY(PVideoFrame_DESTRUCTOR))
++      (this->*(AVS_linkage->PVideoFrame_DESTRUCTOR))();
++  }
++};
++
++class AVSValue {
++public:
++  AVSValue() : integer(0), type('v'), array_size(0) {
++    if (AVS_HAS_ENTRY(AVSValue_CONSTRUCTOR0))
++      (this->*(AVS_linkage->AVSValue_CONSTRUCTOR0))();
++  }
++  AVSValue(IClip* c) : integer(0), type('v'), array_size(0) {
++    if (AVS_HAS_ENTRY(AVSValue_CONSTRUCTOR1))
++      (this->*(AVS_linkage->AVSValue_CONSTRUCTOR1))(c);
++  }
++  AVSValue(const PClip& c) : integer(0), type('v'), array_size(0) {
++    if (AVS_HAS_ENTRY(AVSValue_CONSTRUCTOR2))
++      (this->*(AVS_linkage->AVSValue_CONSTRUCTOR2))(c);
++  }
++  AVSValue(bool b) : integer(0), type('v'), array_size(0) {
++    if (AVS_HAS_ENTRY(AVSValue_CONSTRUCTOR3))
++      (this->*(AVS_linkage->AVSValue_CONSTRUCTOR3))(b);
++  }
++  AVSValue(int i) : integer(0), type('v'), array_size(0) {
++    if (AVS_HAS_ENTRY(AVSValue_CONSTRUCTOR4))
++      (this->*(AVS_linkage->AVSValue_CONSTRUCTOR4))(i);
++  }
++  AVSValue(float f) : integer(0), type('v'), array_size(0) {
++    if (AVS_HAS_ENTRY(AVSValue_CONSTRUCTOR5))
++      (this->*(AVS_linkage->AVSValue_CONSTRUCTOR5))(f);
++  }
++  AVSValue(double f) : integer(0), type('v'), array_size(0) {
++    if (AVS_HAS_ENTRY(AVSValue_CONSTRUCTOR6))
++      (this->*(AVS_linkage->AVSValue_CONSTRUCTOR6))(f);
++  }
++  AVSValue(const char* s) : integer(0), type('v'), array_size(0) {
++    if (AVS_HAS_ENTRY(AVSValue_CONSTRUCTOR7))
++      (this->*(AVS_linkage->AVSValue_CONSTRUCTOR7))(s);
++  }
++  AVSValue(const AVSValue* a, int size) : integer(0), type('v'), array_size(0) {
++    if (AVS_HAS_ENTRY(AVSValue_CONSTRUCTOR8))
++      (this->*(AVS_linkage->AVSValue_CONSTRUCTOR8))(a, size);
++  }
++  AVSValue(const AVSValue& v) : integer(0), type('v'), array_size(0) {
++    if (AVS_HAS_ENTRY(AVSValue_CONSTRUCTOR9))
++      (this->*(AVS_linkage->AVSValue_CONSTRUCTOR9))(v);
++  }
++  ~AVSValue() {
++    if (AVS_HAS_ENTRY(AVSValue_DESTRUCTOR))
++      (this->*(AVS_linkage->AVSValue_DESTRUCTOR))();
++  }
++  AVSValue& operator=(const AVSValue& v) {
++    return AVS_HAS_ENTRY(AVSValue_OPERATOR_ASSIGN)
++      ? (this->*(AVS_linkage->AVSValue_OPERATOR_ASSIGN))(v)
++      : *this;
++  }
++  const AVSValue& operator[](int index) const {
++    return AVS_HAS_ENTRY(AVSValue_OPERATOR_INDEX)
++      ? (this->*(AVS_linkage->AVSValue_OPERATOR_INDEX))(index)
++      : *this;
++  }
++  bool Defined() const {
++    return AVS_HAS_ENTRY(Defined) ? (this->*(AVS_linkage->Defined))() : false;
++  }
++  bool IsClip() const {
++    return AVS_HAS_ENTRY(IsClip) ? (this->*(AVS_linkage->IsClip))() : false;
++  }
++  bool IsBool() const {
++    return AVS_HAS_ENTRY(IsBool) ? (this->*(AVS_linkage->IsBool))() : false;
++  }
++  bool IsInt() const {
++    return AVS_HAS_ENTRY(IsInt) ? (this->*(AVS_linkage->IsInt))() : false;
++  }
++  bool IsFloat() const {
++    return AVS_HAS_ENTRY(IsFloat) ? (this->*(AVS_linkage->IsFloat))() : false;
++  }
++  bool IsString() const {
++    return AVS_HAS_ENTRY(IsString) ? (this->*(AVS_linkage->IsString))() : false;
++  }
++  bool IsArray() const {
++    return AVS_HAS_ENTRY(IsArray) ? (this->*(AVS_linkage->IsArray))() : false;
++  }
++  PClip AsClip() const {
++    return AVS_HAS_ENTRY(AsClip) ? (this->*(AVS_linkage->AsClip))() : PClip();
++  }
++  bool AsBool() const {
++    return AVS_HAS_ENTRY(AsBool1) ? (this->*(AVS_linkage->AsBool1))() : false;
++  }
++  int AsInt() const {
++    return AVS_HAS_ENTRY(AsInt1) ? (this->*(AVS_linkage->AsInt1))() : 0;
++  }
++  const char* AsString() const {
++    return AVS_HAS_ENTRY(AsString1) ? (this->*(AVS_linkage->AsString1))() : 0;
++  }
++  double AsFloat() const {
++    return AVS_HAS_ENTRY(AsFloat1) ? (this->*(AVS_linkage->AsFloat1))() : 0.0;
++  }
++  bool AsBool(bool def) const {
++    return AVS_HAS_ENTRY(AsBool2) ? (this->*(AVS_linkage->AsBool2))(def) : def;
++  }
++  int AsInt(int def) const {
++    return AVS_HAS_ENTRY(AsInt2) ? (this->*(AVS_linkage->AsInt2))(def) : def;
++  }
++  double AsDblDef(double def) const {
++    return AVS_HAS_ENTRY(AsDblDef) ? (this->*(AVS_linkage->AsDblDef))(def) : def;
++  }
++  double AsFloat(float def) const {
++    return AVS_HAS_ENTRY(AsFloat2) ? (this->*(AVS_linkage->AsFloat2))(def) : def;
++  }
++  const char* AsString(const char* def) const {
++    return AVS_HAS_ENTRY(AsString2) ? (this->*(AVS_linkage->AsString2))(def) : def;
++  }
++  int ArraySize() const {
++    return AVS_HAS_ENTRY(ArraySize) ? (this->*(AVS_linkage->ArraySize))() : 0;
++  }
++
++private:
++  union {
++    IClip* clip;
++    bool boolean;
++    __int64 integer;
++    double floating_pt;
++    const char* string;
++    const AVSValue* array;
++  };
++  short type;
++  short array_size;
++};
++
++class GenericVideoFilter : public IClip {
++protected:
++  PClip child;
++  VideoInfo vi;
++
++public:
++  GenericVideoFilter(PClip _child) : child(_child) { vi = child->GetVideoInfo(); }
++  PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env) { return child->GetFrame(n, env); }
++  void __stdcall GetAudio(void* buf, __int64 start, __int64 count, IScriptEnvironment* env) {
++    child->GetAudio(buf, start, count, env);
++  }
++  const VideoInfo& __stdcall GetVideoInfo() { return vi; }
++  bool __stdcall GetParity(int n) { return child->GetParity(n); }
++  int __stdcall SetCacheHints(int, int) { return 0; }
++};
++
++enum {
++  CPUF_FORCE       = 0x0001,
++  CPUF_FPU         = 0x0002,
++  CPUF_MMX         = 0x0004,
++  CPUF_INTEGER_SSE = 0x0008,
++  CPUF_SSE         = 0x0010,
++  CPUF_SSE2        = 0x0020,
++  CPUF_3DNOW       = 0x0040,
++  CPUF_3DNOW_EXT   = 0x0080,
++  CPUF_X86_64      = 0x00A0,
++  CPUF_SSE3        = 0x0100,
++  CPUF_SSSE3       = 0x0200,
++  CPUF_SSE4        = 0x0400,
++  CPUF_SSE4_1      = 0x0400,
++  CPUF_SSE4_2      = 0x1000
++};
++
++class IScriptEnvironment {
++public:
++  virtual __stdcall ~IScriptEnvironment() {}
++  virtual long __stdcall GetCPUFlags() = 0;
++  virtual char* __stdcall SaveString(const char* s, int length = -1) = 0;
++  virtual char* __stdcall Sprintf(const char* fmt, ...) = 0;
++  virtual char* __stdcall VSprintf(const char* fmt, void* val) = 0;
++  __declspec(noreturn) virtual void __stdcall ThrowError(const char* fmt, ...) = 0;
++
++  class NotFound {};
++  typedef AVSValue (__cdecl *ApplyFunc)(AVSValue args, void* user_data, IScriptEnvironment* env);
++
++  virtual void __stdcall AddFunction(const char* name, const char* params, ApplyFunc apply, void* user_data) = 0;
++  virtual bool __stdcall FunctionExists(const char* name) = 0;
++  virtual AVSValue __stdcall Invoke(const char* name, const AVSValue args, const char* const* arg_names = 0) = 0;
++  virtual AVSValue __stdcall GetVar(const char* name) = 0;
++  virtual bool __stdcall SetVar(const char* name, const AVSValue& val) = 0;
++  virtual bool __stdcall SetGlobalVar(const char* name, const AVSValue& val) = 0;
++  virtual void __stdcall PushContext(int level = 0) = 0;
++  virtual void __stdcall PopContext() = 0;
++  virtual PVideoFrame __stdcall NewVideoFrame(const VideoInfo& vi, int align = FRAME_ALIGN) = 0;
++  virtual bool __stdcall MakeWritable(PVideoFrame* pvf) = 0;
++  virtual void __stdcall BitBlt(BYTE* dstp, int dst_pitch, const BYTE* srcp, int src_pitch,
++                                int row_size, int height) = 0;
++
++  typedef void (__cdecl *ShutdownFunc)(void* user_data, IScriptEnvironment* env);
++  virtual void __stdcall AtExit(ShutdownFunc function, void* user_data) = 0;
++  virtual void __stdcall CheckVersion(int version = AVISYNTH_INTERFACE_VERSION) = 0;
++  virtual PVideoFrame __stdcall Subframe(PVideoFrame src, int rel_offset, int new_pitch,
++                                         int new_row_size, int new_height) = 0;
++  virtual int __stdcall SetMemoryMax(int mem) = 0;
++  virtual int __stdcall SetWorkingDir(const char* newdir) = 0;
++  virtual void* __stdcall ManageCache(int key, void* data) = 0;
++
++  enum PlanarChromaAlignmentMode {
++    PlanarChromaAlignmentOff,
++    PlanarChromaAlignmentOn,
++    PlanarChromaAlignmentTest
++  };
++
++  virtual bool __stdcall PlanarChromaAlignment(PlanarChromaAlignmentMode key) = 0;
++  virtual PVideoFrame __stdcall SubframePlanar(PVideoFrame src, int rel_offset, int new_pitch,
++                                                int new_row_size, int new_height, int rel_offsetU,
++                                                int rel_offsetV, int new_pitchUV) = 0;
++  virtual void __stdcall DeleteScriptEnvironment() = 0;
++  virtual void __stdcall ApplyMessage(PVideoFrame* frame, const VideoInfo& vi, const char* message,
++                                      int size, int textcolor, int halocolor, int bgcolor) = 0;
++  virtual const AVS_Linkage* const __stdcall GetAVSLinkage() = 0;
++  virtual AVSValue __stdcall GetVarDef(const char* name, const AVSValue& def = AVSValue()) = 0;
++};
++
++// ABI checks derived from the classic x64 API3 layout used by Hybrid.
++static_assert(sizeof(bool (VideoInfo::*)() const) == 8, "unexpected x64 member-function pointer ABI");
++static_assert(offsetof(AVS_Linkage, HasVideo) == 0x08, "AVS_Linkage first entry must begin at 0x08");
++static_assert(offsetof(AVS_Linkage, PClip_OPERATOR_ASSIGN1) == 0x1E8, "PClip linkage offset mismatch");
++static_assert(offsetof(AVS_Linkage, PVideoFrame_DESTRUCTOR) == 0x220, "PVideoFrame linkage offset mismatch");
++static_assert(offsetof(AVS_Linkage, AVSValue_DESTRUCTOR) == 0x278, "AVSValue linkage offset mismatch");
++static_assert(sizeof(VideoInfo) == 48, "VideoInfo x64 ABI mismatch");
++static_assert(sizeof(VideoFrameBuffer) == 24, "VideoFrameBuffer x64 ABI mismatch");
++static_assert(sizeof(VideoFrame) == 72, "VideoFrame x64 ABI mismatch");
++static_assert(sizeof(IClip) == 16, "IClip x64 ABI mismatch");
++static_assert(sizeof(PClip) == 8, "PClip x64 ABI mismatch");
++static_assert(sizeof(PVideoFrame) == 8, "PVideoFrame x64 ABI mismatch");
++static_assert(sizeof(AVSValue) == 16, "AVSValue x64 ABI mismatch");
++
++#undef AVS_HAS_ENTRY
++#pragma pack(pop)
++
++#endif // COLORMATRIX_AVISYNTH26_API3_X64_H
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/colormatrix/portable_runtime.cpp ColorMatrix-2.6.1-fixed-r3/colormatrix/portable_runtime.cpp
+--- original/ColorMatrix-master/colormatrix/portable_runtime.cpp	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/colormatrix/portable_runtime.cpp	2026-08-06 00:00:00.000000000 +0000
+@@ -0,0 +1,43 @@
++/*
++ * Minimal runtime glue for the reproducible LLVM cross-build in build/.
++ * This file is only used when COLORMATRIX_PORTABLE_BUILD is defined.
++ */
++#include <windows.h>
++#include <stdio.h>
++
++extern "C" int _fltused = 0;
++
++void *operator new(size_t size)
++{
++    return malloc(size ? size : 1);
++}
++
++void *operator new[](size_t size)
++{
++    return malloc(size ? size : 1);
++}
++
++void operator delete(void *ptr)
++{
++    free(ptr);
++}
++
++void operator delete[](void *ptr)
++{
++    free(ptr);
++}
++
++void operator delete(void *ptr, size_t)
++{
++    free(ptr);
++}
++
++void operator delete[](void *ptr, size_t)
++{
++    free(ptr);
++}
++
++extern "C" BOOL WINAPI DllMain(HMODULE, DWORD, LPVOID)
++{
++    return TRUE;
++}
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/colormatrix.htm ColorMatrix-2.6.1-fixed-r3/colormatrix.htm
+--- original/ColorMatrix-master/colormatrix.htm	2018-02-22 08:16:56.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/colormatrix.htm	2026-08-06 00:00:00.000000000 +0000
+@@ -59,11 +59,11 @@
+ </HEAD>
+ <BODY>
+ 
+-<h1>ColorMatrix v2.5</h1>
++<h1>ColorMatrix v2.6.1</h1>
+ <h2>Abstract</h2>
+ <ul>
+ <b>author:</b>    tritical, SoraYuki
+-<br><b>version:</b> v2.5<br>
++<br><b>version:</b> v2.6.1<br>
+ <b>download:</b>   <a href="http://bengal.missouri.edu/~kes25c/">http://bengal.missouri.edu/~kes25c/</a>
+ <br><b>category:</b>   Misc Plugins
+ <br><b>requirements:</b>&nbsp;
+@@ -424,7 +424,14 @@
+ 
+ <h2>Changelog</h2>
+ <ul>
+-<p>v2.6, 22th February 2018<br>
++<p>v2.6.1, 6th August 2026<br>
++  - Fixed the five-wide conversion-table indexing introduced when Rec.2020 support was added.<br>
++  - Fixed d2v/hint conversion indexing for the five-matrix table.<br>
++  - Remapped legacy MMX/SSE2 dispatch mode numbers to the five-wide table.<br>
++  - Fixed conversion-name diagnostics for all 25 source/destination pairs.<br>
++  - Added bounds checking and 64-bit-safe compatibility fixes.<br>
++</p>
++<p>v2.6, 22nd February 2018<br>
+   + Add Rec.2020 support (without ASM optimization)
+ </p>
+ <p>v2.5, 25th January 2009<br>
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/tests/test_mode_index.py ColorMatrix-2.6.1-fixed-r3/tests/test_mode_index.py
+--- original/ColorMatrix-master/tests/test_mode_index.py	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/tests/test_mode_index.py	2026-08-06 00:00:00.000000000 +0000
+@@ -0,0 +1,46 @@
++#!/usr/bin/env python3
++from __future__ import annotations
++
++import re
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++CPP = (ROOT / "colormatrix" / "ColorMatrix.cpp").read_text(encoding="utf-8")
++HEADER = (ROOT / "colormatrix" / "ColorMatrix.h").read_text(encoding="utf-8")
++
++
++def mode(source: int, dest: int) -> int:
++    return source * 5 + dest
++
++
++def main() -> int:
++    indices = [mode(source, dest) for source in range(5) for dest in range(5)]
++    assert indices == list(range(25))
++    assert mode(2, 0) == 10  # Rec.601 -> Rec.709
++    assert mode(1, 3) == 8   # FCC -> SMPTE 240M
++
++    assert "MATRIX_MODE_INDEX(source, dest)" in CPP
++    assert "source*4+dest" not in CPP.replace(" ", "")
++    assert "return 4+dest" not in CPP.replace(" ", "")
++    assert "return 8+dest" not in CPP.replace(" ", "")
++    assert "return 12+dest" not in CPP.replace(" ", "")
++    assert "YUV_CONVERSION_COUNT" in HEADER
++
++    # Verify the four legacy SIMD kernels were remapped to five-wide indices.
++    expected_groups = [
++        {1, 2, 3, 16, 17},
++        {5, 8, 10, 13, 15},
++        {7},
++        {11},
++    ]
++    body = CPP[CPP.index("void (*find_YV12_SIMD"):CPP.index("int ColorMatrix::parseD2V")]
++    numbers = [set(map(int, re.findall(r"modef == (\d+)", block)))
++               for block in re.split(r"else if", body)[:4]]
++    assert numbers == expected_groups, numbers
++
++    print("source indexing tests: PASS")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/tests/test_patched_pe.py ColorMatrix-2.6.1-fixed-r3/tests/test_patched_pe.py
+--- original/ColorMatrix-master/tests/test_patched_pe.py	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/tests/test_patched_pe.py	2026-08-07 23:09:18.000000000 +0000
+@@ -0,0 +1,145 @@
++#!/usr/bin/env python3
++"""Static checks for the R2 Hybrid-compatible patched DLLs."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import struct
++from dataclasses import dataclass
++from pathlib import Path
++
++EXPECTED = {
++    "x86": "52ecc494cd930298e5778b7aa8d6f241cb25f0ca8a3ff13d5f945b535c737d1c",
++    "x64": "1e87ce9d680c050aca88ab3c0137d220579ae05c23919eb6311310eefe0fc1c1",
++}
++
++
++@dataclass(frozen=True)
++class Section:
++    name: str
++    virtual_address: int
++    virtual_size: int
++    raw_offset: int
++    raw_size: int
++
++
++class PE:
++    def __init__(self, path: Path) -> None:
++        self.path = path
++        self.data = path.read_bytes()
++        assert self.data[:2] == b"MZ"
++        pe = struct.unpack_from("<I", self.data, 0x3C)[0]
++        assert self.data[pe:pe + 4] == b"PE\0\0"
++        self.machine, count = struct.unpack_from("<HH", self.data, pe + 4)
++        optional_size = struct.unpack_from("<H", self.data, pe + 20)[0]
++        table = pe + 24 + optional_size
++        sections: list[Section] = []
++        for i in range(count):
++            off = table + 40 * i
++            name = self.data[off:off + 8].rstrip(b"\0").decode("ascii", "replace")
++            vsize, va, rsize, roff = struct.unpack_from("<IIII", self.data, off + 8)
++            sections.append(Section(name, va, vsize, roff, rsize))
++        self.sections = sections
++
++    def section(self, name: str) -> Section:
++        return next(s for s in self.sections if s.name == name)
++
++    def offset(self, rva: int) -> int:
++        for s in self.sections:
++            if s.virtual_address <= rva < s.virtual_address + max(s.virtual_size, s.raw_size):
++                return s.raw_offset + rva - s.virtual_address
++        raise AssertionError(f"RVA 0x{rva:X} is unmapped in {self.path}")
++
++    def at(self, rva: int, size: int) -> bytes:
++        off = self.offset(rva)
++        return self.data[off:off + size]
++
++
++def sha(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def short_jcc_target(pe: PE, rva: int, opcode: int = 0x75) -> int:
++    insn = pe.at(rva, 2)
++    assert insn[0] == opcode, insn.hex(" ")
++    displacement = struct.unpack("<b", insn[1:])[0]
++    return rva + 2 + displacement
++
++
++def rel32_target(pe: PE, rva: int, opcode: int = 0xE9) -> int:
++    insn = pe.at(rva, 5)
++    assert insn[0] == opcode, insn.hex(" ")
++    displacement = struct.unpack("<i", insn[1:])[0]
++    return rva + 5 + displacement
++
++
++def check_x86(path: Path) -> None:
++    pe = PE(path)
++    assert sha(path) == EXPECTED["x86"]
++    assert pe.machine == 0x014C
++
++    # R2 fix: normal source!=dest path must enter the trampoline, not bypass it.
++    assert pe.at(0x4115, 2) == bytes.fromhex("75 4a")
++    assert short_jcc_target(pe, 0x4115) == 0x4161
++    assert rel32_target(pe, 0x4161) == 0x11200
++
++    cave = bytes.fromhex(
++        "39 c2 74 07 "          # cmp edx,eax / je equal
++        "8d 04 90 "             # lea eax,[eax+edx*4]
++        "01 d0 "                # add eax,edx => dest + source*5
++        "eb 05 "
++        "b8 fe ff ff ff "
++        "89 81 e0 04 00 00 "
++        "e9 5a 2f ff ff"
++    )
++    assert pe.at(0x11200, len(cave)) == cave
++    assert rel32_target(pe, 0x11216) == 0x4175
++    assert pe.section(".text").virtual_size >= 0x1021B
++
++    for rva in (0x125F, 0x22C2):
++        assert pe.at(rva, 4) == bytes.fromhex("83 45 ec 0a")
++    for rva in (0x1D77, 0x23F7):
++        assert pe.at(rva, 4) == bytes.fromhex("83 45 ec 0f")
++    for rva in (0x1D95, 0x2415):
++        assert pe.at(rva, 4) == bytes.fromhex("83 45 ec 05")
++
++
++def check_x64(path: Path) -> None:
++    pe = PE(path)
++    assert sha(path) == EXPECTED["x64"]
++    assert pe.machine == 0x8664
++
++    # R2 fix: normal source!=dest path must enter at the first instruction.
++    assert pe.at(0x30E7, 2) == bytes.fromhex("75 5c")
++    assert short_jcc_target(pe, 0x30E7) == 0x3145
++
++    block = bytes.fromhex(
++        "39 d0 74 07 "
++        "6b c0 05 "             # source *= 5
++        "01 d0 "                # + dest
++        "eb 05 "
++        "b8 fe ff ff ff "
++        "41 89 86 f8 04 00 00 "
++        "90 90 90 90"
++    )
++    assert pe.at(0x3145, len(block)) == block
++    assert pe.at(0x3155, 7) == bytes.fromhex("41 89 86 f8 04 00 00")
++
++    assert pe.at(0x727F, 3) == bytes.fromhex("83 c0 0a")
++    assert pe.at(0x72AF, 3) == bytes.fromhex("83 c0 0f")
++    assert pe.at(0x72BE, 3) == bytes.fromhex("83 c0 05")
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--x86", type=Path, required=True)
++    ap.add_argument("--x64", type=Path, required=True)
++    args = ap.parse_args()
++    check_x86(args.x86)
++    check_x64(args.x64)
++    print("R2 patched PE tests: PASS")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/tests/test_source_api3_x64.py ColorMatrix-2.6.1-fixed-r3/tests/test_source_api3_x64.py
+--- original/ColorMatrix-master/tests/test_source_api3_x64.py	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/tests/test_source_api3_x64.py	2026-08-09 07:49:14.666310416 +0000
+@@ -0,0 +1,165 @@
++#!/usr/bin/env python3
++"""Static checks for the source-built x86 and classic API3 x64 DLLs.
++
++Both expected hashes have separately passed reporter runtime validation in
++Selur Hybrid; these checks guard the source/PE properties that produced them.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import re
++import struct
++from dataclasses import dataclass
++from pathlib import Path
++
++EXPECTED_X86 = "c8109af3a1ef32bc6fbd9062f60ef56b2136e4e259be442952f7056fdd125395"
++EXPECTED_X64 = "2291dda6a7fee1d167f79d8846db19bf4e974a22d795cb01d7bbf0b9764008ef"
++
++
++@dataclass(frozen=True)
++class Section:
++    virtual_address: int
++    virtual_size: int
++    raw_offset: int
++    raw_size: int
++
++
++class PE:
++    def __init__(self, path: Path) -> None:
++        self.path = path
++        self.data = path.read_bytes()
++        assert self.data[:2] == b"MZ"
++        self.pe = struct.unpack_from("<I", self.data, 0x3C)[0]
++        assert self.data[self.pe:self.pe + 4] == b"PE\0\0"
++        self.machine, count = struct.unpack_from("<HH", self.data, self.pe + 4)
++        optional_size = struct.unpack_from("<H", self.data, self.pe + 20)[0]
++        self.optional = self.pe + 24
++        self.magic = struct.unpack_from("<H", self.data, self.optional)[0]
++        directory_base = self.optional + (112 if self.magic == 0x20B else 96)
++        self.export_rva, self.export_size = struct.unpack_from("<II", self.data, directory_base)
++        section_table = self.optional + optional_size
++        self.sections: list[Section] = []
++        for i in range(count):
++            off = section_table + i * 40
++            vsize, va, rsize, roff = struct.unpack_from("<IIII", self.data, off + 8)
++            self.sections.append(Section(va, vsize, roff, rsize))
++
++    def offset(self, rva: int) -> int:
++        for s in self.sections:
++            if s.virtual_address <= rva < s.virtual_address + max(s.virtual_size, s.raw_size):
++                return s.raw_offset + rva - s.virtual_address
++        raise AssertionError(f"unmapped RVA 0x{rva:X} in {self.path}")
++
++    def at(self, rva: int, size: int) -> bytes:
++        off = self.offset(rva)
++        return self.data[off:off + size]
++
++    def cstring(self, rva: int) -> str:
++        off = self.offset(rva)
++        end = self.data.index(0, off)
++        return self.data[off:end].decode("ascii")
++
++    def exports(self) -> dict[str, int]:
++        off = self.offset(self.export_rva)
++        (_flags, _time, _major, _minor, _name, ordinal_base,
++         function_count, name_count, functions_rva, names_rva,
++         ordinals_rva) = struct.unpack_from("<IIHHIIIIIII", self.data, off)
++        functions_off = self.offset(functions_rva)
++        names_off = self.offset(names_rva)
++        ordinals_off = self.offset(ordinals_rva)
++        result: dict[str, int] = {}
++        for i in range(name_count):
++            name_rva = struct.unpack_from("<I", self.data, names_off + 4 * i)[0]
++            ordinal_index = struct.unpack_from("<H", self.data, ordinals_off + 2 * i)[0]
++            assert ordinal_index < function_count
++            function_rva = struct.unpack_from("<I", self.data, functions_off + 4 * ordinal_index)[0]
++            result[self.cstring(name_rva)] = function_rva
++        assert ordinal_base == 1
++        return result
++
++
++def sha256(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def check_source_tree(root: Path) -> None:
++    header = (root / "colormatrix" / "avisynth26_api3_x64.h").read_text(encoding="utf-8")
++    source = (root / "colormatrix" / "ColorMatrix.cpp").read_text(encoding="utf-8")
++    build = (root / "build" / "build_portable_clang_cl.sh").read_text(encoding="utf-8")
++
++    required_header = [
++        "AVISYNTH_INTERFACE_VERSION = 6",
++        "struct AVS_Linkage",
++        "int Size;",
++        "offsetof(AVS_Linkage, PClip_OPERATOR_ASSIGN1) == 0x1E8",
++        "offsetof(AVS_Linkage, PVideoFrame_DESTRUCTOR) == 0x220",
++        "offsetof(AVS_Linkage, AVSValue_DESTRUCTOR) == 0x278",
++        "sizeof(VideoInfo) == 48",
++        "sizeof(VideoFrame) == 72",
++        "sizeof(IClip) == 16",
++        "sizeof(AVSValue) == 16",
++    ]
++    for text in required_header:
++        assert text in header, text
++
++    assert re.search(
++        r"AvisynthPluginInit3\s*\(\s*IScriptEnvironment\* env,\s*"
++        r"const AVS_Linkage\* const vectors\s*\)", source
++    )
++    assert "AVS_linkage = vectors;" in source
++    assert "/DCOLORMATRIX_CLASSIC_API3_X64" in build
++    assert "/DAVISYNTH64" in build
++
++
++def check_x86(path: Path) -> None:
++    pe = PE(path)
++    assert sha256(path) == EXPECTED_X86
++    assert pe.machine == 0x014C
++    assert pe.magic == 0x10B
++
++
++def check_x64(path: Path) -> None:
++    pe = PE(path)
++    assert sha256(path) == EXPECTED_X64
++    assert pe.machine == 0x8664
++    assert pe.magic == 0x20B
++
++    exports = pe.exports()
++    assert exports.keys() == {"AvisynthPluginInit3"}, exports
++    init_rva = exports["AvisynthPluginInit3"]
++    init = pe.at(init_rva, 0x40)
++
++    # Prologue, store RDX (the linkage argument), and call AddFunction through
++    # IScriptEnvironment's classic vtable slot at +0x30.
++    assert init.startswith(bytes.fromhex("48 83 ec 28 48 89 15"))
++    assert bytes.fromhex("ff 50 30") in init
++    assert bytes.fromhex("31 c0 48 83 c4 28 c3") in init
++
++    # The source-built IClip implementation advertises classic interface 6.
++    get_version = bytes.fromhex("b8 06 00 00 00 c3")
++    assert get_version in pe.data
++
++    # Linkage-backed wrappers use the exact classic-prefix offsets observed in
++    # Hybrid's original x64 ColorMatrix binary.
++    for displacement in (0x1E8, 0x220, 0x278):
++        needle = struct.pack("<I", displacement)
++        assert needle in pe.data, f"missing linkage displacement 0x{displacement:X}"
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--x86", type=Path, required=True)
++    parser.add_argument("--x64", type=Path, required=True)
++    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
++    args = parser.parse_args()
++
++    check_source_tree(args.root)
++    check_x86(args.x86)
++    check_x64(args.x64)
++    print("R3 source-build API3 tests: PASS")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff -ruN '--exclude=bin' '--exclude=generated' '--exclude=__pycache__' '--exclude=SOURCE_DIFF.patch' original/ColorMatrix-master/tools/patch_hybrid_binaries.py ColorMatrix-2.6.1-fixed-r3/tools/patch_hybrid_binaries.py
+--- original/ColorMatrix-master/tools/patch_hybrid_binaries.py	1970-01-01 00:00:00.000000000 +0000
++++ ColorMatrix-2.6.1-fixed-r3/tools/patch_hybrid_binaries.py	2026-08-07 23:08:48.000000000 +0000
+@@ -0,0 +1,217 @@
++#!/usr/bin/env python3
++"""Patch Hybrid's supplied ColorMatrix 2.6 DLLs for five-wide matrix indexing.
++
++This script only accepts the exact x86/x64 DLLs analyzed for this release.  It
++verifies SHA-256 hashes and every instruction sequence before changing bytes.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import struct
++from dataclasses import dataclass
++from pathlib import Path
++
++X86_SHA256 = "3d042d59df206cd45586348c72d2458dee6e5dd2fc5c8540916245da1a7c8ec2"
++X64_SHA256 = "654454449f992122bfae5671003491db67212ee6b15fe0975f81b8b47223fedf"
++X86_PATCHED_SHA256 = "52ecc494cd930298e5778b7aa8d6f241cb25f0ca8a3ff13d5f945b535c737d1c"
++X64_PATCHED_SHA256 = "1e87ce9d680c050aca88ab3c0137d220579ae05c23919eb6311310eefe0fc1c1"
++
++
++@dataclass(frozen=True)
++class Section:
++    name: str
++    virtual_address: int
++    virtual_size: int
++    raw_offset: int
++    raw_size: int
++    header_offset: int
++
++
++class PEImage:
++    def __init__(self, data: bytearray) -> None:
++        self.data = data
++        if data[:2] != b"MZ":
++            raise ValueError("not an MZ executable")
++        self.pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
++        if data[self.pe_offset:self.pe_offset + 4] != b"PE\0\0":
++            raise ValueError("not a PE image")
++        coff = self.pe_offset + 4
++        self.machine, section_count = struct.unpack_from("<HH", data, coff)
++        optional_size = struct.unpack_from("<H", data, coff + 16)[0]
++        section_table = self.pe_offset + 24 + optional_size
++        sections: list[Section] = []
++        for i in range(section_count):
++            off = section_table + 40 * i
++            name = bytes(data[off:off + 8]).rstrip(b"\0").decode("ascii", "replace")
++            virtual_size, virtual_address, raw_size, raw_offset = struct.unpack_from("<IIII", data, off + 8)
++            sections.append(Section(name, virtual_address, virtual_size, raw_offset, raw_size, off))
++        self.sections = sections
++
++    def section(self, name: str) -> Section:
++        for section in self.sections:
++            if section.name == name:
++                return section
++        raise ValueError(f"PE section {name!r} not found")
++
++    def rva_to_offset(self, rva: int) -> int:
++        for section in self.sections:
++            span = max(section.virtual_size, section.raw_size)
++            if section.virtual_address <= rva < section.virtual_address + span:
++                return section.raw_offset + (rva - section.virtual_address)
++        raise ValueError(f"RVA 0x{rva:X} does not map to a section")
++
++    def expect_rva(self, rva: int, expected: bytes) -> int:
++        off = self.rva_to_offset(rva)
++        actual = bytes(self.data[off:off + len(expected)])
++        if actual != expected:
++            raise ValueError(
++                f"unexpected bytes at RVA 0x{rva:X}:\n"
++                f"  expected {expected.hex(' ')}\n"
++                f"  actual   {actual.hex(' ')}"
++            )
++        return off
++
++    def patch_rva(self, rva: int, expected: bytes, replacement: bytes) -> None:
++        if len(expected) != len(replacement):
++            raise ValueError("in-place patch length mismatch")
++        off = self.expect_rva(rva, expected)
++        self.data[off:off + len(replacement)] = replacement
++
++
++def sha256(data: bytes | bytearray) -> str:
++    return hashlib.sha256(data).hexdigest()
++
++
++def rel32(instruction_rva: int, target_rva: int) -> bytes:
++    displacement = target_rva - (instruction_rva + 5)
++    if not -(1 << 31) <= displacement < (1 << 31):
++        raise ValueError("relative jump is out of range")
++    return struct.pack("<i", displacement)
++
++
++def patch_x64(data: bytearray) -> bytearray:
++    if sha256(data) != X64_SHA256:
++        raise ValueError("x64 input SHA-256 does not match the supported Hybrid ColorMatrix64.dll")
++    pe = PEImage(data)
++    if pe.machine != 0x8664:
++        raise ValueError("x64 input is not an AMD64 PE image")
++
++    # Redirect the earlier source!=dest branch into the rewritten constructor block.
++    # It originally jumped directly to the old LEA at RVA 0x3156, which is now
++    # inside the replacement sequence.
++    pe.patch_rva(0x30E7, bytes.fromhex("75 6d"), bytes.fromhex("75 5c"))
++
++    # Constructor: source == dest ? -2 : source * 5 + dest.
++    original = bytes.fromhex(
++        "3b c2 75 0d 41 c7 86 f8 04 00 00 fe ff ff ff "
++        "eb 0a 8d 04 82 41 89 86 f8 04 00 00"
++    )
++    fixed = bytes.fromhex(
++        "39 d0 74 07 "          # cmp eax,edx / je equal
++        "6b c0 05 "             # imul eax,eax,5
++        "01 d0 "                # add eax,edx
++        "eb 05 "                # jmp store
++        "b8 fe ff ff ff "       # equal: mov eax,-2
++        "41 89 86 f8 04 00 00 " # store: mov [r14+0x4f8],eax
++        "90 90 90 90"
++    )
++    pe.patch_rva(0x3145, original, fixed)
++
++    # findMode(): old four-wide row offsets -> five-wide row offsets.
++    pe.patch_rva(0x727F, bytes.fromhex("83 c0 08"), bytes.fromhex("83 c0 0a"))
++    pe.patch_rva(0x72AF, bytes.fromhex("83 c0 0c"), bytes.fromhex("83 c0 0f"))
++    pe.patch_rva(0x72BE, bytes.fromhex("83 c0 04"), bytes.fromhex("83 c0 05"))
++    return data
++
++
++def patch_x86(data: bytearray) -> bytearray:
++    if sha256(data) != X86_SHA256:
++        raise ValueError("x86 input SHA-256 does not match the supported Hybrid colormatrix.dll")
++    pe = PEImage(data)
++    if pe.machine != 0x014C:
++        raise ValueError("x86 input is not an i386 PE image")
++
++    # Redirect the earlier source!=dest branch to the trampoline at 0x4161.
++    # It originally jumped to the old LEA at 0x416C, bypassing the trampoline.
++    pe.patch_rva(0x4115, bytes.fromhex("75 55"), bytes.fromhex("75 4a"))
++
++    constructor_rva = 0x4161
++    return_rva = 0x4175
++    cave_rva = 0x11200
++
++    original = bytes.fromhex(
++        "3b d0 75 07 b8 fe ff ff ff eb 03 8d 04 90 "
++        "89 81 e0 04 00 00"
++    )
++    constructor_patch = b"\xE9" + rel32(constructor_rva, cave_rva) + b"\x90" * (len(original) - 5)
++    pe.patch_rva(constructor_rva, original, constructor_patch)
++
++    cave = (
++        bytes.fromhex(
++            "39 c2 74 07 "          # cmp edx,eax / je equal
++            "8d 04 90 "             # lea eax,[eax+edx*4]
++            "01 d0 "                # add eax,edx (source*5 + dest)
++            "eb 05 "                # jmp store
++            "b8 fe ff ff ff "       # equal: mov eax,-2
++            "89 81 e0 04 00 00 "    # store: mov [ecx+0x4e0],eax
++            "e9"
++        )
++        + rel32(cave_rva + 22, return_rva)
++    )
++    cave_off = pe.expect_rva(cave_rva, b"\0" * len(cave))
++    pe.data[cave_off:cave_off + len(cave)] = cave
++
++    # Extend .text's mapped virtual size to include the code cave. The raw
++    # section already contains sufficient zero-filled space.
++    text = pe.section(".text")
++    required_virtual_size = cave_rva + len(cave) - text.virtual_address
++    if required_virtual_size > text.raw_size:
++        raise ValueError("x86 code cave exceeds .text raw section")
++    if text.virtual_size != 0x101E6:
++        raise ValueError(f"unexpected original .text VirtualSize 0x{text.virtual_size:X}")
++    struct.pack_into("<I", pe.data, text.header_offset + 8, required_virtual_size)
++
++    # findMode() is inlined twice in this build.
++    for rva in (0x125F, 0x22C2):
++        pe.patch_rva(rva, bytes.fromhex("83 45 ec 08"), bytes.fromhex("83 45 ec 0a"))
++    for rva in (0x1D77, 0x23F7):
++        pe.patch_rva(rva, bytes.fromhex("83 45 ec 0c"), bytes.fromhex("83 45 ec 0f"))
++    for rva in (0x1D95, 0x2415):
++        pe.patch_rva(rva, bytes.fromhex("83 45 ec 04"), bytes.fromhex("83 45 ec 05"))
++    return data
++
++
++def patch_file(kind: str, source: Path, destination: Path) -> None:
++    data = bytearray(source.read_bytes())
++    patched = patch_x86(data) if kind == "x86" else patch_x64(data)
++    actual_hash = sha256(patched)
++    expected_hash = X86_PATCHED_SHA256 if kind == "x86" else X64_PATCHED_SHA256
++    if actual_hash != expected_hash:
++        raise ValueError(
++            f"internal error: {kind} patched SHA-256 mismatch: "
++            f"expected {expected_hash}, got {actual_hash}"
++        )
++    destination.parent.mkdir(parents=True, exist_ok=True)
++    destination.write_bytes(patched)
++    print(f"{kind}: {source.name} -> {destination}")
++    print(f"  SHA-256: {actual_hash}")
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--x86", type=Path, help="original Hybrid colormatrix.dll")
++    parser.add_argument("--x64", type=Path, help="original Hybrid ColorMatrix64.dll")
++    parser.add_argument("--out-dir", type=Path, required=True)
++    args = parser.parse_args()
++    if not args.x86 and not args.x64:
++        parser.error("at least one of --x86 or --x64 is required")
++    if args.x86:
++        patch_file("x86", args.x86, args.out_dir / "x86" / "colormatrix.dll")
++    if args.x64:
++        patch_file("x64", args.x64, args.out_dir / "x64" / "ColorMatrix64.dll")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
